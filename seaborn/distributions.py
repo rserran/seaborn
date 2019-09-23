@@ -57,7 +57,8 @@ def distplot(a, bins=None, hist=True, kde=True, rug=False, fit=None,
         Observed data. If this is a Series object with a ``name`` attribute,
         the name will be used to label the data axis.
     bins : argument for matplotlib hist(), or None, optional
-        Specification of hist bins, or None to use Freedman-Diaconis rule.
+        Specification of hist bins. If unspecified, as reference rule is used
+        that tries to find a useful default.
     hist : bool, optional
         Whether to plot a (normed) histogram.
     kde : bool, optional
@@ -66,7 +67,7 @@ def distplot(a, bins=None, hist=True, kde=True, rug=False, fit=None,
         Whether to draw a rugplot on the support axis.
     fit : random variable object, optional
         An object with `fit` method, returning a tuple that can be passed to a
-        `pdf` method a positional arguments following an grid of values to
+        `pdf` method a positional arguments following a grid of values to
         evaluate the pdf on.
     {hist, kde, rug, fit}_kws : dictionaries, optional
         Keyword arguments for underlying plotting functions.
@@ -276,7 +277,14 @@ def _univariate_kdeplot(data, shade, vertical, kernel, bw, gridsize, cut,
         clip = (-np.inf, np.inf)
 
     # Calculate the KDE
-    if _has_statsmodels:
+
+    if np.nan_to_num(data.var()) == 0:
+        # Don't try to compute KDE on singular data
+        msg = "Data must have variance to compute a kernel density estimate."
+        warnings.warn(msg, UserWarning)
+        x, y = np.array([]), np.array([])
+
+    elif _has_statsmodels:
         # Prefer using statsmodels for kernel flexibility
         x, y = _statsmodels_univariate_kde(data, kernel, bw,
                                            gridsize, cut, clip,

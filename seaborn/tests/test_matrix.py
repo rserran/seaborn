@@ -306,6 +306,8 @@ class TestHeatmap(object):
         nt.assert_equal(len(f.axes), 2)
         plt.close(f)
 
+    @pytest.mark.xfail(mpl.__version__ == "3.1.1",
+                       reason="matplotlib 3.1.1 bug")
     def test_heatmap_axes(self):
 
         ax = mat.heatmap(self.df_norm)
@@ -591,6 +593,8 @@ class TestDendrogram(object):
         nt.assert_equal(len(ax.collections[0].get_paths()),
                         len(d.dependent_coord))
 
+    @pytest.mark.xfail(mpl.__version__ == "3.1.1",
+                       reason="matplotlib 3.1.1 bug")
     def test_dendrogram_rotate(self):
         kws = self.default_kws.copy()
         kws['rotate'] = True
@@ -1045,6 +1049,25 @@ class TestClustermap(object):
                         [(1.0, 1.0, 1.0)] + list(self.col_colors[1:]))
         nt.assert_equal(list(cm.row_colors),
                         [(1.0, 1.0, 1.0)] + list(self.row_colors[1:]))
+
+    def test_row_col_colors_ignore_heatmap_kwargs(self):
+
+        g = mat.clustermap(self.rs.uniform(0, 200, self.df_norm.shape),
+                           row_colors=self.row_colors,
+                           col_colors=self.col_colors,
+                           cmap="Spectral",
+                           norm=mpl.colors.LogNorm(),
+                           vmax=100)
+
+        assert np.array_equal(
+            np.array(self.row_colors)[g.dendrogram_row.reordered_ind],
+            g.ax_row_colors.collections[0].get_facecolors()[:, :3]
+        )
+
+        assert np.array_equal(
+            np.array(self.col_colors)[g.dendrogram_col.reordered_ind],
+            g.ax_col_colors.collections[0].get_facecolors()[:, :3]
+        )
 
     def test_mask_reorganization(self):
 
