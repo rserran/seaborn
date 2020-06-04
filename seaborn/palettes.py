@@ -382,7 +382,7 @@ def husl_palette(n_colors=6, h=.01, s=.9, l=.65):  # noqa
     hues *= 359
     s *= 99
     l *= 99  # noqa
-    palette = [husl.husl_to_rgb(h_i, s, l) for h_i in hues]
+    palette = [_color_to_rgb((h_i, s, l), input='husl') for h_i in hues]
     return _ColorPalette(palette)
 
 
@@ -469,8 +469,10 @@ def _color_to_rgb(color, input):
         color = colorsys.hls_to_rgb(*color)
     elif input == "husl":
         color = husl.husl_to_rgb(*color)
+        color = tuple(np.clip(color, 0, 1))
     elif input == "xkcd":
         color = xkcd_rgb[color]
+
     return color
 
 
@@ -746,7 +748,7 @@ def diverging_palette(h_neg, h_pos, s=75, l=50, sep=10, n=6,  # noqa
     pos = palfunc((h_pos, s, l), n_half, input="husl")
     midpoint = dict(light=[(.95, .95, .95)], dark=[(.133, .133, .133)])[center]
     mid = midpoint * sep
-    pal = blend_palette(np.concatenate([neg, mid,  pos]), n, as_cmap=as_cmap)
+    pal = blend_palette(np.concatenate([neg, mid, pos]), n, as_cmap=as_cmap)
     return pal
 
 
@@ -966,9 +968,9 @@ def cubehelix_palette(n_colors=6, start=0, rot=.4, gamma=1.0, hue=0.8,
         return color
 
     cdict = {
-            "red": get_color_function(-0.14861, 1.78277),
-            "green": get_color_function(-0.29227, -0.90649),
-            "blue": get_color_function(1.97294, 0.0),
+        "red": get_color_function(-0.14861, 1.78277),
+        "green": get_color_function(-0.29227, -0.90649),
+        "blue": get_color_function(1.97294, 0.0),
     }
 
     cmap = mpl.colors.LinearSegmentedColormap("cubehelix", cdict)

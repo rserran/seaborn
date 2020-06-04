@@ -1,6 +1,7 @@
 from itertools import product
 import warnings
 from textwrap import dedent
+from distutils.version import LooseVersion
 
 import numpy as np
 import pandas as pd
@@ -8,9 +9,11 @@ from scipy import stats
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
+from ._core import variable_type, categorical_order
 from . import utils
 from .palettes import color_palette, blend_palette
-from .distributions import distplot, kdeplot,  _freedman_diaconis_bins
+from .distributions import distplot, kdeplot, _freedman_diaconis_bins
+from ._decorators import _deprecate_positional_args
 
 
 __all__ = ["FacetGrid", "PairGrid", "JointGrid", "pairplot", "jointplot"]
@@ -20,6 +23,10 @@ class Grid(object):
     """Base class for grids of subplots."""
     _margin_titles = False
     _legend_out = True
+
+    def __init__(self):
+
+        self._tight_layout_rect = [0, 0, 1, 1]
 
     def set(self, **kwargs):
         """Set attributes on each subplot Axes."""
@@ -32,6 +39,12 @@ class Grid(object):
         kwargs = kwargs.copy()
         kwargs.setdefault("bbox_inches", "tight")
         self.fig.savefig(*args, **kwargs)
+
+    def tight_layout(self, *args, **kwargs):
+        """Call fig.tight_layout within rect that exclude the legend."""
+        kwargs = kwargs.copy()
+        kwargs.setdefault("rect", self._tight_layout_rect)
+        self.fig.tight_layout(*args, **kwargs)
 
     def add_legend(self, legend_data=None, title=None, label_order=None,
                    **kwargs):
@@ -70,10 +83,13 @@ class Grid(object):
         blank_handle = mpl.patches.Patch(alpha=0, linewidth=0)
         handles = [legend_data.get(l, blank_handle) for l in label_order]
         title = self._hue_var if title is None else title
-        try:
-            title_size = mpl.rcParams["axes.labelsize"] * .85
-        except TypeError:  # labelsize is something like "large"
-            title_size = mpl.rcParams["axes.labelsize"]
+        if LooseVersion(mpl.__version__) < LooseVersion("3.0"):
+            try:
+                title_size = mpl.rcParams["axes.labelsize"] * .85
+            except TypeError:  # labelsize is something like "large"
+                title_size = mpl.rcParams["axes.labelsize"]
+        else:
+            title_size = mpl.rcParams["legend.title_fontsize"]
 
         # Unpack nested labels from a hierarchical legend
         labels = []
@@ -120,6 +136,7 @@ class Grid(object):
 
             # Place the subplot axes to give space for the legend
             self.fig.subplots_adjust(right=right)
+            self._tight_layout_rect[2] = right
 
         else:
             # Draw a legend in the first axis
@@ -128,6 +145,7 @@ class Grid(object):
 
             leg = ax.legend(handles, labels, **kwargs)
             leg.set_title(title, prop={"size": title_size})
+            self._legend = leg
 
         return self
 
@@ -150,7 +168,7 @@ class Grid(object):
             palette = color_palette(n_colors=1)
 
         else:
-            hue_names = utils.categorical_order(data[hue], hue_order)
+            hue_names = categorical_order(data[hue], hue_order)
             n_colors = len(hue_names)
 
             # By default use either the current color palette or HUSL
@@ -218,17 +236,23 @@ _facet_docs = dict(
         the last column. This option is experimental and may not work in all
         cases.\
     """),
-    )
+)
 
 
 class FacetGrid(Grid):
     """Multi-plot grid for plotting conditional relationships."""
-    def __init__(self, data, row=None, col=None, hue=None, col_wrap=None,
-                 sharex=True, sharey=True, height=3, aspect=1, palette=None,
-                 row_order=None, col_order=None, hue_order=None, hue_kws=None,
-                 dropna=True, legend_out=True, despine=True,
-                 margin_titles=False, xlim=None, ylim=None, subplot_kws=None,
-                 gridspec_kws=None, size=None):
+    @_deprecate_positional_args
+    def __init__(
+        self, data, *,
+        row=None, col=None, hue=None, col_wrap=None,
+        sharex=True, sharey=True, height=3, aspect=1, palette=None,
+        row_order=None, col_order=None, hue_order=None, hue_kws=None,
+        dropna=True, legend_out=True, despine=True,
+        margin_titles=False, xlim=None, ylim=None, subplot_kws=None,
+        gridspec_kws=None, size=None
+    ):
+
+        super(FacetGrid, self).__init__()
 
         # Handle deprecations
         if size is not None:
@@ -242,7 +266,7 @@ class FacetGrid(Grid):
         if hue is None:
             hue_names = None
         else:
-            hue_names = utils.categorical_order(data[hue], hue_order)
+            hue_names = categorical_order(data[hue], hue_order)
 
         colors = self._get_palette(data, hue, hue_order, palette)
 
@@ -250,12 +274,12 @@ class FacetGrid(Grid):
         if row is None:
             row_names = []
         else:
-            row_names = utils.categorical_order(data[row], row_order)
+            row_names = categorical_order(data[row], row_order)
 
         if col is None:
             col_names = []
         else:
-            col_names = utils.categorical_order(data[col], col_order)
+            col_names = categorical_order(data[col], col_order)
 
         # Additional dict of kwarg -> list of values for mapping the hue var
         hue_kws = hue_kws if hue_kws is not None else {}
@@ -303,17 +327,28 @@ class FacetGrid(Grid):
         if ylim is not None:
             subplot_kws["ylim"] = ylim
 
-        # Initialize the subplot grid
+        # --- Initialize the subplot grid
         if col_wrap is None:
+
             kwargs = dict(figsize=figsize, squeeze=False,
                           sharex=sharex, sharey=sharey,
                           subplot_kw=subplot_kws,
                           gridspec_kw=gridspec_kws)
 
             fig, axes = plt.subplots(nrow, ncol, **kwargs)
-            self.axes = axes
+
+            if col is None and row is None:
+                axes_dict = {}
+            elif col is None:
+                axes_dict = dict(zip(row_names, axes.flat))
+            elif row is None:
+                axes_dict = dict(zip(col_names, axes.flat))
+            else:
+                facet_product = product(row_names, col_names)
+                axes_dict = dict(zip(facet_product, axes.flat))
 
         else:
+
             # If wrapping the col variable we need to make the grid ourselves
             if gridspec_kws:
                 warnings.warn("`gridspec_kws` ignored when using `col_wrap`")
@@ -328,27 +363,16 @@ class FacetGrid(Grid):
                 subplot_kws["sharey"] = axes[0]
             for i in range(1, n_axes):
                 axes[i] = fig.add_subplot(nrow, ncol, i + 1, **subplot_kws)
-            self.axes = axes
 
-            # Now we turn off labels on the inner axes
-            if sharex:
-                for ax in self._not_bottom_axes:
-                    for label in ax.get_xticklabels():
-                        label.set_visible(False)
-                    ax.xaxis.offsetText.set_visible(False)
-            if sharey:
-                for ax in self._not_left_axes:
-                    for label in ax.get_yticklabels():
-                        label.set_visible(False)
-                    ax.yaxis.offsetText.set_visible(False)
+            axes_dict = dict(zip(col_names, axes))
 
-        # Set up the class attributes
-        # ---------------------------
+        # --- Set up the class attributes
 
         # First the public API
         self.data = data
         self.fig = fig
         self.axes = axes
+        self.axes_dict = axes_dict
 
         self.row_names = row_names
         self.col_names = col_names
@@ -362,6 +386,7 @@ class FacetGrid(Grid):
         self._col_var = col
 
         self._margin_titles = margin_titles
+        self._margin_titles_texts = []
         self._col_wrap = col_wrap
         self._hue_var = hue_var
         self._colors = colors
@@ -373,10 +398,23 @@ class FacetGrid(Grid):
         self._dropna = dropna
         self._not_na = not_na
 
-        # Make the axes look good
-        fig.tight_layout()
+        # --- Make the axes look good
+
+        self.tight_layout()
         if despine:
             self.despine()
+
+        if sharex:
+            for ax in self._not_bottom_axes:
+                for label in ax.get_xticklabels():
+                    label.set_visible(False)
+                ax.xaxis.offsetText.set_visible(False)
+
+        if sharey:
+            for ax in self._not_left_axes:
+                for label in ax.get_yticklabels():
+                    label.set_visible(False)
+                ax.yaxis.offsetText.set_visible(False)
 
     __init__.__doc__ = dedent("""\
         Initialize the matplotlib figure and FacetGrid object.
@@ -395,9 +433,10 @@ class FacetGrid(Grid):
 
         When using seaborn functions that infer semantic mappings from a
         dataset, care must be taken to synchronize those mappings across
-        facets. In most cases, it will be better to use a figure-level function
-        (e.g. :func:`relplot` or :func:`catplot`) than to use
-        :class:`FacetGrid` directly.
+        facets (e.g., by defing the ``hue`` mapping with a palette dict or
+        setting the data type of the variables to ``category``). In most cases,
+        it will be better to use a figure-level function (e.g. :func:`relplot`
+        or :func:`catplot`) than to use :class:`FacetGrid` directly.
 
         The basic workflow is to initialize the :class:`FacetGrid` object with
         the dataset and the variables that are used to structure the grid. Then
@@ -570,7 +609,7 @@ class FacetGrid(Grid):
             >>> def qqplot(x, y, **kwargs):
             ...     _, xr = stats.probplot(x, fit=False)
             ...     _, yr = stats.probplot(y, fit=False)
-            ...     sns.scatterplot(xr, yr, **kwargs)
+            ...     sns.scatterplot(x=xr, y=yr, **kwargs)
             >>> g = sns.FacetGrid(tips, col="smoker", hue="sex")
             >>> g = (g.map(qqplot, "total_bill", "tip", **kws)
             ...       .add_legend())
@@ -837,6 +876,12 @@ class FacetGrid(Grid):
     def _facet_plot(self, func, ax, plot_args, plot_kwargs):
 
         # Draw the plot
+        if str(func.__module__).startswith("seaborn"):
+            plot_kwargs = plot_kwargs.copy()
+            semantics = ["x", "y", "hue", "size", "style"]
+            for key, val in zip(semantics, plot_args):
+                plot_kwargs[key] = val
+            plot_args = []
         func(*plot_args, **plot_kwargs)
 
         # Sort out the supporting information
@@ -847,7 +892,7 @@ class FacetGrid(Grid):
         """Finalize the annotations and layout."""
         self.set_axis_labels(*axlabels)
         self.set_titles()
-        self.fig.tight_layout()
+        self.tight_layout()
 
     def facet_axis(self, row_i, col_j):
         """Make the axis identified by these indices active and return it."""
@@ -867,30 +912,37 @@ class FacetGrid(Grid):
         utils.despine(self.fig, **kwargs)
         return self
 
-    def set_axis_labels(self, x_var=None, y_var=None):
+    def set_axis_labels(self, x_var=None, y_var=None, clear_inner=True):
         """Set axis labels on the left column and bottom row of the grid."""
         if x_var is not None:
             self._x_var = x_var
-            self.set_xlabels(x_var)
+            self.set_xlabels(x_var, clear_inner=clear_inner)
         if y_var is not None:
             self._y_var = y_var
-            self.set_ylabels(y_var)
+            self.set_ylabels(y_var, clear_inner=clear_inner)
+
         return self
 
-    def set_xlabels(self, label=None, **kwargs):
+    def set_xlabels(self, label=None, clear_inner=True, **kwargs):
         """Label the x axis on the bottom row of the grid."""
         if label is None:
             label = self._x_var
         for ax in self._bottom_axes:
             ax.set_xlabel(label, **kwargs)
+        if clear_inner:
+            for ax in self._not_bottom_axes:
+                ax.set_xlabel("")
         return self
 
-    def set_ylabels(self, label=None, **kwargs):
+    def set_ylabels(self, label=None, clear_inner=True, **kwargs):
         """Label the y axis on the left column of the grid."""
         if label is None:
             label = self._y_var
         for ax in self._left_axes:
             ax.set_ylabel(label, **kwargs)
+        if clear_inner:
+            for ax in self._not_left_axes:
+                ax.set_ylabel("")
         return self
 
     def set_xticklabels(self, labels=None, step=None, **kwargs):
@@ -917,7 +969,7 @@ class FacetGrid(Grid):
                 ax.set_yticklabels(labels, **kwargs)
         return self
 
-    def set_titles(self, template=None, row_template=None,  col_template=None,
+    def set_titles(self, template=None, row_template=None, col_template=None,
                    **kwargs):
         """Draw titles either above each facet or on the grid margins.
 
@@ -961,16 +1013,24 @@ class FacetGrid(Grid):
         template = utils.to_utf8(template)
 
         if self._margin_titles:
+
+            # Remove any existing title texts
+            for text in self._margin_titles_texts:
+                text.remove()
+            self._margin_titles_texts = []
+
             if self.row_names is not None:
                 # Draw the row titles on the right edge of the grid
                 for i, row_name in enumerate(self.row_names):
                     ax = self.axes[i, -1]
                     args.update(dict(row_name=row_name))
                     title = row_template.format(**args)
-                    bgcolor = self.fig.get_facecolor()
-                    ax.annotate(title, xy=(1.02, .5), xycoords="axes fraction",
-                                rotation=270, ha="left", va="center",
-                                backgroundcolor=bgcolor, **kwargs)
+                    text = ax.annotate(
+                        title, xy=(1.02, .5), xycoords="axes fraction",
+                        rotation=270, ha="left", va="center",
+                        **kwargs
+                    )
+                    self._margin_titles_texts.append(text)
 
             if self.col_names is not None:
                 # Draw the column titles  as normal titles
@@ -1020,9 +1080,11 @@ class FacetGrid(Grid):
             axes = []
             n_empty = self._nrow * self._ncol - self._n_facets
             for i, ax in enumerate(self.axes):
-                append = (i % self._ncol and
-                          i < (self._ncol * (self._nrow - 1)) and
-                          i < (self._ncol * (self._nrow - 1) - n_empty))
+                append = (
+                    i % self._ncol
+                    and i < (self._ncol * (self._nrow - 1))
+                    and i < (self._ncol * (self._nrow - 1) - n_empty)
+                )
                 if append:
                     axes.append(ax)
             return np.array(axes, object).flat
@@ -1060,8 +1122,10 @@ class FacetGrid(Grid):
             axes = []
             n_empty = self._nrow * self._ncol - self._n_facets
             for i, ax in enumerate(self.axes):
-                append = (i >= (self._ncol * (self._nrow - 1)) or
-                          i >= (self._ncol * (self._nrow - 1) - n_empty))
+                append = (
+                    i >= (self._ncol * (self._nrow - 1))
+                    or i >= (self._ncol * (self._nrow - 1) - n_empty)
+                )
                 if append:
                     axes.append(ax)
             return np.array(axes, object).flat
@@ -1075,8 +1139,10 @@ class FacetGrid(Grid):
             axes = []
             n_empty = self._nrow * self._ncol - self._n_facets
             for i, ax in enumerate(self.axes):
-                append = (i < (self._ncol * (self._nrow - 1)) and
-                          i < (self._ncol * (self._nrow - 1) - n_empty))
+                append = (
+                    i < (self._ncol * (self._nrow - 1))
+                    and i < (self._ncol * (self._nrow - 1) - n_empty)
+                )
                 if append:
                     axes.append(ax)
             return np.array(axes, object).flat
@@ -1100,11 +1166,14 @@ class PairGrid(Grid):
     See the :ref:`tutorial <grid_tutorial>` for more information.
 
     """
-
-    def __init__(self, data, hue=None, hue_order=None, palette=None,
-                 hue_kws=None, vars=None, x_vars=None, y_vars=None,
-                 corner=False, diag_sharey=True, height=2.5, aspect=1,
-                 layout_pad=0, despine=True, dropna=True, size=None):
+    @_deprecate_positional_args
+    def __init__(
+        self, data, *,
+        hue=None, hue_order=None, palette=None,
+        hue_kws=None, vars=None, x_vars=None, y_vars=None,
+        corner=False, diag_sharey=True, height=2.5, aspect=1,
+        layout_pad=0, despine=True, dropna=True, size=None
+    ):
         """Initialize the plot figure and PairGrid object.
 
         Parameters
@@ -1230,7 +1299,7 @@ class PairGrid(Grid):
 
             >>> g = sns.PairGrid(iris)
             >>> g = g.map_upper(sns.scatterplot)
-            >>> g = g.map_lower(sns.kdeplot, colors="C0")
+            >>> g = g.map_lower(sns.kdeplot, color="C0")
             >>> g = g.map_diag(sns.kdeplot, lw=2)
 
         Use different colors and markers for each categorical level:
@@ -1244,6 +1313,8 @@ class PairGrid(Grid):
             >>> g = g.add_legend()
 
         """
+
+        super(PairGrid, self).__init__()
 
         # Handle deprecations
         if size is not None:
@@ -1316,7 +1387,7 @@ class PairGrid(Grid):
             self.hue_vals = pd.Series(["_nolegend_"] * len(data),
                                       index=data.index)
         else:
-            hue_names = utils.categorical_order(data[hue], hue_order)
+            hue_names = categorical_order(data[hue], hue_order)
             if dropna:
                 # Filter NA from the list of unique hue names
                 hue_names = list(filter(pd.notnull, hue_names))
@@ -1333,7 +1404,7 @@ class PairGrid(Grid):
         if despine:
             self._despine = True
             utils.despine(fig=fig)
-        fig.tight_layout(pad=layout_pad)
+        self.tight_layout(pad=layout_pad)
 
     def map(self, func, **kwargs):
         """Plot with the same function in every subplot.
@@ -1473,7 +1544,10 @@ class PairGrid(Grid):
                 if self._dropna:
                     data_k = utils.remove_na(data_k)
 
-                func(data_k, label=label_k, color=color, **kwargs)
+                if str(func.__module__).startswith("seaborn"):
+                    func(x=data_k, label=label_k, color=color, **kwargs)
+                else:
+                    func(data_k, label=label_k, color=color, **kwargs)
 
             self._clean_axis(ax)
 
@@ -1519,7 +1593,10 @@ class PairGrid(Grid):
                 kwargs[kw] = val_list[k]
             color = self.palette[k] if kw_color is None else kw_color
 
-            func(x, y, label=label_k, color=color, **kwargs)
+            if str(func.__module__).startswith("seaborn"):
+                func(x=x, y=y, label=label_k, color=color, **kwargs)
+            else:
+                func(x, y, label=label_k, color=color, **kwargs)
 
         self._clean_axis(ax)
         self._update_legend_data(ax)
@@ -1535,23 +1612,24 @@ class PairGrid(Grid):
 
     def _find_numeric_cols(self, data):
         """Find which variables in a DataFrame are numeric."""
-        # This can't be the best way to do this, but  I do not
-        # know what the best way might be, so this seems ok
         numeric_cols = []
         for col in data:
-            try:
-                data[col].astype(np.float)
+            if variable_type(data[col]) == "numeric":
                 numeric_cols.append(col)
-            except (ValueError, TypeError):
-                pass
         return numeric_cols
 
 
 class JointGrid(object):
     """Grid for drawing a bivariate plot with marginal univariate plots."""
 
-    def __init__(self, x, y, data=None, height=6, ratio=5, space=.2,
-                 dropna=True, xlim=None, ylim=None, size=None):
+    @_deprecate_positional_args
+    def __init__(
+        self, *,
+        x=None, y=None,
+        data=None,
+        height=6, ratio=5, space=.2,
+        dropna=True, xlim=None, ylim=None, size=None
+    ):
         """Set up the grid of subplots.
 
         Parameters
@@ -1627,8 +1705,8 @@ class JointGrid(object):
             :context: close-figs
 
             >>> g = sns.JointGrid(x="total_bill", y="tip", data=tips, space=0)
-            >>> g = g.plot_joint(sns.kdeplot, cmap="Blues_d")
-            >>> g = g.plot_marginals(sns.kdeplot, shade=True)
+            >>> g = g.plot_joint(sns.kdeplot, color="b")
+            >>> g = g.plot_marginals(sns.kdeplot, fill=True)
 
         Draw a smaller plot with relatively larger marginal axes:
 
@@ -1637,8 +1715,8 @@ class JointGrid(object):
 
             >>> g = sns.JointGrid(x="total_bill", y="tip", data=tips,
             ...                   height=5, ratio=2)
-            >>> g = g.plot_joint(sns.kdeplot, cmap="Reds_d")
-            >>> g = g.plot_marginals(sns.kdeplot, color="r", shade=True)
+            >>> g = g.plot_joint(sns.kdeplot, color="r")
+            >>> g = g.plot_marginals(sns.kdeplot, color="r", fill=True)
 
         Set limits on the axes:
 
@@ -1647,8 +1725,8 @@ class JointGrid(object):
 
             >>> g = sns.JointGrid(x="total_bill", y="tip", data=tips,
             ...                   xlim=(0, 50), ylim=(0, 8))
-            >>> g = g.plot_joint(sns.kdeplot, cmap="Purples_d")
-            >>> g = g.plot_marginals(sns.kdeplot, color="m", shade=True)
+            >>> g = g.plot_joint(sns.kdeplot, color="m")
+            >>> g = g.plot_marginals(sns.kdeplot, color="m", fill=True)
 
         """
         # Handle deprecations
@@ -1768,7 +1846,11 @@ class JointGrid(object):
 
         """
         plt.sca(self.ax_joint)
-        func(self.x, self.y, **kwargs)
+
+        if str(func.__module__).startswith("seaborn"):
+            func(x=self.x, y=self.y, **kwargs)
+        else:
+            func(self.x, self.y, **kwargs)
 
         return self
 
@@ -1793,11 +1875,20 @@ class JointGrid(object):
         """
         kwargs["vertical"] = False
         plt.sca(self.ax_marg_x)
-        func(self.x, **kwargs)
+        if str(func.__module__).startswith("seaborn"):
+            func(x=self.x, **kwargs)
+        else:
+            func(self.x, **kwargs)
 
         kwargs["vertical"] = True
         plt.sca(self.ax_marg_y)
-        func(self.y, **kwargs)
+        if str(func.__module__).startswith("seaborn"):
+            func(x=self.y, **kwargs)
+        else:
+            func(self.y, **kwargs)
+
+        self.ax_marg_x.yaxis.get_label().set_visible(False)
+        self.ax_marg_y.xaxis.get_label().set_visible(False)
 
         return self
 
@@ -1893,11 +1984,15 @@ class JointGrid(object):
         self.fig.savefig(*args, **kwargs)
 
 
-def pairplot(data, hue=None, hue_order=None, palette=None,
-             vars=None, x_vars=None, y_vars=None,
-             kind="scatter", diag_kind="auto", markers=None,
-             height=2.5, aspect=1, corner=False, dropna=True,
-             plot_kws=None, diag_kws=None, grid_kws=None, size=None):
+@_deprecate_positional_args
+def pairplot(
+    data, *,
+    hue=None, hue_order=None, palette=None,
+    vars=None, x_vars=None, y_vars=None,
+    kind="scatter", diag_kind="auto", markers=None,
+    height=2.5, aspect=1, corner=False, dropna=True,
+    plot_kws=None, diag_kws=None, grid_kws=None, size=None,
+):
     """Plot pairwise relationships in a dataset.
 
     By default, this function will create a grid of Axes such that each numeric
@@ -2054,7 +2149,7 @@ def pairplot(data, hue=None, hue_order=None, palette=None,
 
         >>> g = sns.pairplot(iris, diag_kind="kde", markers="+",
         ...                  plot_kws=dict(s=50, edgecolor="b", linewidth=1),
-        ...                  diag_kws=dict(shade=True))
+        ...                  diag_kws=dict(fill=True))
 
     """
     # Handle deprecations
@@ -2102,7 +2197,7 @@ def pairplot(data, hue=None, hue_order=None, palette=None,
         if diag_kind == "hist":
             grid.map_diag(plt.hist, **diag_kws)
         elif diag_kind == "kde":
-            diag_kws.setdefault("shade", True)
+            diag_kws.setdefault("fill", True)
             diag_kws["legend"] = False
             grid.map_diag(kdeplot, **diag_kws)
 
@@ -2126,10 +2221,17 @@ def pairplot(data, hue=None, hue_order=None, palette=None,
     return grid
 
 
-def jointplot(x, y, data=None, kind="scatter", stat_func=None,
-              color=None, height=6, ratio=5, space=.2,
-              dropna=True, xlim=None, ylim=None,
-              joint_kws=None, marginal_kws=None, annot_kws=None, **kwargs):
+@_deprecate_positional_args
+def jointplot(
+    *,
+    x=None, y=None,
+    data=None,
+    kind="scatter", stat_func=None,
+    color=None, height=6, ratio=5, space=.2,
+    dropna=True, xlim=None, ylim=None,
+    joint_kws=None, marginal_kws=None, annot_kws=None,
+    **kwargs
+):
     """Draw a plot of two variables with bivariate and univariate graphs.
 
     This function provides a convenient interface to the :class:`JointGrid`
@@ -2194,14 +2296,14 @@ def jointplot(x, y, data=None, kind="scatter", stat_func=None,
     .. plot::
         :context: close-figs
 
-        >>> g = sns.jointplot("total_bill", "tip", data=tips, kind="reg")
+        >>> g = sns.jointplot(x="total_bill", y="tip", data=tips, kind="reg")
 
     Replace the scatterplot with a joint histogram using hexagonal bins:
 
     .. plot::
         :context: close-figs
 
-        >>> g = sns.jointplot("total_bill", "tip", data=tips, kind="hex")
+        >>> g = sns.jointplot(x="total_bill", y="tip", data=tips, kind="hex")
 
     Replace the scatterplots and histograms with density estimates and align
     the marginal Axes tightly with the joint Axes:
@@ -2210,7 +2312,7 @@ def jointplot(x, y, data=None, kind="scatter", stat_func=None,
         :context: close-figs
 
         >>> iris = sns.load_dataset("iris")
-        >>> g = sns.jointplot("sepal_width", "petal_length", data=iris,
+        >>> g = sns.jointplot(x="sepal_width", y="petal_length", data=iris,
         ...                   kind="kde", space=0, color="g")
 
     Draw a scatterplot, then add a joint density estimate:
@@ -2218,9 +2320,9 @@ def jointplot(x, y, data=None, kind="scatter", stat_func=None,
     .. plot::
         :context: close-figs
 
-        >>> g = (sns.jointplot("sepal_length", "sepal_width",
+        >>> g = (sns.jointplot(x="sepal_length", y="sepal_width",
         ...                    data=iris, color="k")
-        ...         .plot_joint(sns.kdeplot, zorder=0, n_levels=6))
+        ...         .plot_joint(sns.kdeplot, zorder=0, levels=6))
 
     Pass vectors in directly without using Pandas, then name the axes:
 
@@ -2228,7 +2330,7 @@ def jointplot(x, y, data=None, kind="scatter", stat_func=None,
         :context: close-figs
 
         >>> x, y = np.random.randn(2, 300)
-        >>> g = (sns.jointplot(x, y, kind="hex")
+        >>> g = (sns.jointplot(x=x, y=y, kind="hex")
         ...         .set_axis_labels("x", "y"))
 
     Draw a smaller figure with more space devoted to the marginal plots:
@@ -2236,7 +2338,7 @@ def jointplot(x, y, data=None, kind="scatter", stat_func=None,
     .. plot::
         :context: close-figs
 
-        >>> g = sns.jointplot("total_bill", "tip", data=tips,
+        >>> g = sns.jointplot(x="total_bill", y="tip", data=tips,
         ...                   height=5, ratio=3, color="g")
 
     Pass keyword arguments down to the underlying plots:
@@ -2244,7 +2346,7 @@ def jointplot(x, y, data=None, kind="scatter", stat_func=None,
     .. plot::
         :context: close-figs
 
-        >>> g = sns.jointplot("petal_length", "sepal_length", data=iris,
+        >>> g = sns.jointplot(x="petal_length", y="sepal_length", data=iris,
         ...                   marginal_kws=dict(bins=15, rug=True),
         ...                   annot_kws=dict(stat="r"),
         ...                   s=40, edgecolor="w", linewidth=1)
@@ -2272,9 +2374,11 @@ def jointplot(x, y, data=None, kind="scatter", stat_func=None,
     cmap = blend_palette(colors, as_cmap=True)
 
     # Initialize the JointGrid object
-    grid = JointGrid(x, y, data, dropna=dropna,
-                     height=height, ratio=ratio, space=space,
-                     xlim=xlim, ylim=ylim)
+    grid = JointGrid(
+        data=data, x=x, y=y,
+        dropna=dropna, height=height, ratio=ratio, space=space,
+        xlim=xlim, ylim=ylim
+    )
 
     # Plot the data using the grid
     if kind == "scatter":
@@ -2330,8 +2434,8 @@ def jointplot(x, y, data=None, kind="scatter", stat_func=None,
         x, y = grid.ax_joint.collections[0].get_offsets().T
         marginal_kws.setdefault("color", color)
         marginal_kws.setdefault("kde", False)
-        distplot(x, ax=grid.ax_marg_x, **marginal_kws)
-        distplot(y, vertical=True, fit=stats.norm, ax=grid.ax_marg_y,
+        distplot(x=x, ax=grid.ax_marg_x, **marginal_kws)
+        distplot(x=y, vertical=True, fit=stats.norm, ax=grid.ax_marg_y,
                  **marginal_kws)
         stat_func = None
     else:

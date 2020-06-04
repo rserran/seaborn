@@ -5,7 +5,6 @@ import matplotlib as mpl
 import pytest
 import nose.tools as nt
 import numpy.testing as npt
-import matplotlib.pyplot as plt
 
 from .. import palettes, utils, rcmod
 from ..external import husl
@@ -195,8 +194,14 @@ class TestColorPalettes(object):
 
         color = 120, 50, 40
         rgb_got = palettes._color_to_rgb(color, "husl")
-        rgb_want = husl.husl_to_rgb(*color)
-        nt.assert_equal(rgb_got, rgb_want)
+        rgb_want = tuple(husl.husl_to_rgb(*color))
+        assert rgb_got == rgb_want
+
+        for h in range(0, 360):
+            color = h, 100, 100
+            rgb = palettes._color_to_rgb(color, "husl")
+            assert min(rgb) >= 0
+            assert max(rgb) <= 1
 
     def test_rgb_from_xkcd(self):
 
@@ -236,7 +241,7 @@ class TestColorPalettes(object):
         args = h_neg, h_pos, sat, lum
 
         n = 12
-        pal = palettes.diverging_palette(*args,  n=n)
+        pal = palettes.diverging_palette(*args, n=n)
         neg_pal = palettes.light_palette((h_neg, sat, lum), int(n // 2),
                                          input="husl")
         pos_pal = palettes.light_palette((h_pos, sat, lum), int(n // 2),
@@ -354,11 +359,3 @@ class TestColorPalettes(object):
         pal_in = palettes.color_palette("Set1", 10)
         pal_out = palettes.color_palette(pal_in)
         nt.assert_equal(pal_in, pal_out)
-
-    def test_get_color_cycle(self):
-
-        colors = [(1., 0., 0.), (0, 1., 0.)]
-        prop_cycle = plt.cycler(color=colors)
-        with plt.rc_context({"axes.prop_cycle": prop_cycle}):
-            result = utils.get_color_cycle()
-            assert result == colors
