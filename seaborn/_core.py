@@ -5,6 +5,7 @@ from functools import partial
 from collections.abc import Iterable, Sequence, Mapping
 from numbers import Number
 from datetime import datetime
+from distutils.version import LooseVersion
 
 import numpy as np
 import pandas as pd
@@ -16,8 +17,6 @@ from ._decorators import (
 from .palettes import (
     QUAL_PALETTES,
     color_palette,
-    cubehelix_palette,
-    _parse_cubehelix_args,
 )
 from .utils import (
     get_color_cycle,
@@ -90,7 +89,7 @@ class HueMapping(SemanticMapping):
         """
         super().__init__(plotter)
 
-        data = plotter.plot_data["hue"]
+        data = plotter.plot_data.get("hue", pd.Series(dtype=float))
 
         if data.notna().any():
 
@@ -146,10 +145,17 @@ class HueMapping(SemanticMapping):
         except KeyError:
             # Use the colormap to interpolate between existing datapoints
             # (e.g. in the context of making a continuous legend)
-            normed = self.norm(key)
-            if np.ma.is_masked(normed):
-                normed = np.nan
-            value = self.cmap(normed)
+            try:
+                normed = self.norm(key)
+            except TypeError as err:
+                if np.isnan(key):
+                    value = (0, 0, 0, 0)
+                else:
+                    raise err
+            else:
+                if np.ma.is_masked(normed):
+                    normed = np.nan
+                value = self.cmap(normed)
         return value
 
     def infer_map_type(self, palette, norm, input_format, var_type):
@@ -228,15 +234,8 @@ class HueMapping(SemanticMapping):
 
             if isinstance(palette, mpl.colors.Colormap):
                 cmap = palette
-            elif str(palette).startswith("ch:"):
-                args, kwargs = _parse_cubehelix_args(palette)
-                cmap = cubehelix_palette(0, *args, as_cmap=True, **kwargs)
             else:
-                try:
-                    cmap = mpl.cm.get_cmap(palette)
-                except (ValueError, TypeError):
-                    err = "Palette {} not understood"
-                    raise ValueError(err)
+                cmap = color_palette(palette, as_cmap=True)
 
             # Now sort out the data normalization
             if norm is None:
@@ -273,7 +272,7 @@ class SizeMapping(SemanticMapping):
         """
         super().__init__(plotter)
 
-        data = plotter.plot_data["size"]
+        data = plotter.plot_data.get("size", pd.Series(dtype=float))
 
         if data.notna().any():
 
@@ -390,8 +389,11 @@ class SizeMapping(SemanticMapping):
                 sizes = self.plotter._default_size_range
 
             # For categorical sizes, use regularly-spaced linear steps
-            # between the minimum and maximum sizes
-            sizes = np.linspace(*sizes, len(levels))
+            # between the minimum and maximum sizes. Then reverse the
+            # ramp so that the largest value is used for the first entry
+            # in size_order, etc. This is because "ordered" categoricals
+            # are often though to go in decreasing priority.
+            sizes = np.linspace(*sizes, len(levels))[::-1]
             lookup_table = dict(zip(levels, sizes))
 
         return levels, lookup_table
@@ -495,7 +497,7 @@ class StyleMapping(SemanticMapping):
         """
         super().__init__(plotter)
 
-        data = plotter.plot_data["style"]
+        data = plotter.plot_data.get("style", pd.Series(dtype=float))
 
         if data.notna().any():
 
@@ -591,9 +593,9 @@ class VectorPlotter:
     # we need a general name for this and separate handling
     semantics = "x", "y", "hue", "size", "style", "units"
     wide_structure = {
-        "x": "index", "y": "values", "hue": "columns", "style": "columns",
+        "x": "@index", "y": "@values", "hue": "@columns", "style": "@columns",
     }
-    flat_structure = {"x": "index", "y": "values"}
+    flat_structure = {"x": "@index", "y": "@values"}
 
     _default_size_range = 1, 2  # Unused but needed in tests, ugh
 
@@ -602,19 +604,53 @@ class VectorPlotter:
         self.assign_variables(data, variables)
 
         for var, cls in self._semantic_mappings.items():
-            if var in self.semantics:
 
-                # Create the mapping function
-                map_func = partial(cls.map, plotter=self)
-                setattr(self, f"map_{var}", map_func)
+            # Create the mapping function
+            map_func = partial(cls.map, plotter=self)
+            setattr(self, f"map_{var}", map_func)
 
-                # Call the mapping function to initialize with default values
-                getattr(self, f"map_{var}")()
+            # Call the mapping function to initialize with default values
+            getattr(self, f"map_{var}")()
+
+        self._var_levels = {}
 
     @classmethod
-    def get_semantics(cls, kwargs):
+    def get_semantics(cls, kwargs, semantics=None):
         """Subset a dictionary` arguments with known semantic variables."""
-        return {k: kwargs[k] for k in cls.semantics}
+        # TODO this should be get_variables since we have included x and y
+        if semantics is None:
+            semantics = cls.semantics
+        variables = {}
+        for key, val in kwargs.items():
+            if key in semantics and val is not None:
+                variables[key] = val
+        return variables
+
+    @property
+    def has_xy_data(self):
+        """Return True at least one of x or y is defined."""
+        return bool({"x", "y"} & set(self.variables))
+
+    @property
+    def var_levels(self):
+        """Property interface to ordered list of variables levels.
+
+        Each time it's accessed, it updates the var_levels dictionary with the
+        list of levels in the current semantic mappers. But it also allows the
+        dictionary to persist, so it can be used to set levels by a key. This is
+        used to track the list of col/row levels using an attached FacetGrid
+        object, but it's kind of messy and ideally fixed by improving the
+        faceting logic so it interfaces better with the modern approach to
+        tracking plot variables.
+
+        """
+        for var in self.variables:
+            try:
+                map_obj = getattr(self, f"_{var}_map")
+                self._var_levels[var] = map_obj.levels
+            except AttributeError:
+                pass
+        return self._var_levels
 
     def assign_variables(self, data=None, variables={}):
         """Define plot variables, optionally using lookup from `data`."""
@@ -666,17 +702,22 @@ class VectorPlotter:
             the inputs (or None when no name can be determined).
 
         """
-        # TODO raise here if any kwarg values are not None,
-        # # if we decide for "structure-only" wide API
+        # Raise if semantic or other variables are assigned in wide-form mode
+        assigned = [k for k, v in kwargs.items() if v is not None]
+        if any(assigned):
+            s = "s" if len(assigned) > 1 else ""
+            err = f"The following variable{s} cannot be assigned with wide-form data: "
+            err += ", ".join(f"`{v}`" for v in assigned)
+            raise ValueError(err)
 
-        # First, determine if the data object actually has any data in it
+        # Determine if the data object actually has any data in it
         empty = data is None or not len(data)
 
         # Then, determine if we have "flat" data (a single vector)
         if isinstance(data, dict):
             values = data.values()
         else:
-            values = np.atleast_1d(data)
+            values = np.atleast_1d(np.asarray(data, dtype=object))
         flat = not any(
             isinstance(v, Iterable) and not isinstance(v, (str, bytes))
             for v in values
@@ -685,7 +726,7 @@ class VectorPlotter:
         if empty:
 
             # Make an object with the structure of plot_data, but empty
-            plot_data = pd.DataFrame(columns=self.semantics)
+            plot_data = pd.DataFrame()
             variables = {}
 
         elif flat:
@@ -695,8 +736,8 @@ class VectorPlotter:
             # (Could be accomplished with a more general to_series() interface)
             flat_data = pd.Series(data).copy()
             names = {
-                "values": flat_data.name,
-                "index": flat_data.index.name
+                "@values": flat_data.name,
+                "@index": flat_data.index.name
             }
 
             plot_data = {}
@@ -705,10 +746,10 @@ class VectorPlotter:
             for var in ["x", "y"]:
                 if var in self.flat_structure:
                     attr = self.flat_structure[var]
-                    plot_data[var] = getattr(flat_data, attr)
+                    plot_data[var] = getattr(flat_data, attr[1:])
                     variables[var] = names[self.flat_structure[var]]
 
-            plot_data = pd.DataFrame(plot_data).reindex(columns=self.semantics)
+            plot_data = pd.DataFrame(plot_data)
 
         else:
 
@@ -743,22 +784,39 @@ class VectorPlotter:
             wide_data = wide_data.loc[:, numeric_cols]
 
             # Now melt the data to long form
-            melt_kws = {"var_name": "columns", "value_name": "values"}
-            if "index" in self.wide_structure.values():
-                melt_kws["id_vars"] = "index"
-                wide_data["index"] = wide_data.index.to_series()
+            melt_kws = {"var_name": "@columns", "value_name": "@values"}
+            use_index = "@index" in self.wide_structure.values()
+            if use_index:
+                melt_kws["id_vars"] = "@index"
+                try:
+                    orig_categories = wide_data.columns.categories
+                    orig_ordered = wide_data.columns.ordered
+                    wide_data.columns = wide_data.columns.add_categories("@index")
+                except AttributeError:
+                    category_columns = False
+                else:
+                    category_columns = True
+                wide_data["@index"] = wide_data.index.to_series()
+
             plot_data = wide_data.melt(**melt_kws)
+
+            if use_index and category_columns:
+                plot_data["@columns"] = pd.Categorical(plot_data["@columns"],
+                                                       orig_categories,
+                                                       orig_ordered)
 
             # Assign names corresponding to plot semantics
             for var, attr in self.wide_structure.items():
                 plot_data[var] = plot_data[attr]
-            plot_data = plot_data.reindex(columns=self.semantics)
 
             # Define the variable names
             variables = {}
             for var, attr in self.wide_structure.items():
-                obj = getattr(wide_data, attr)
+                obj = getattr(wide_data, attr[1:])
                 variables[var] = getattr(obj, "name", None)
+
+            # Remove redundant columns from plot_data
+            plot_data = plot_data[list(variables)]
 
         return plot_data, variables
 
@@ -825,20 +883,32 @@ class VectorPlotter:
                     variables[key] = val
                 else:
                     # We don't know what this name means
-                    err = f"Could not interpret input '{val}'"
+                    err = f"Could not interpret value `{val}` for parameter `{key}`"
                     raise ValueError(err)
 
             else:
 
                 # Otherwise, assume the value is itself a vector of data
-                # TODO check for 1D here or let pd.DataFrame raise?
+
+                # Raise when data is present and a vector can't be combined with it
+                if isinstance(data, pd.DataFrame) and not isinstance(val, pd.Series):
+                    if val is not None and len(data) != len(val):
+                        val_cls = val.__class__.__name__
+                        err = (
+                            f"Length of {val_cls} vectors must match length of `data`"
+                            f" when both are used, but `data` has length {len(data)}"
+                            f" and the vector passed to `{key}` has length {len(val)}."
+                        )
+                        raise ValueError(err)
+
                 plot_data[key] = val
+
                 # Try to infer the name of the variable
                 variables[key] = getattr(val, "name", None)
 
         # Construct a tidy plot DataFrame. This will convert a number of
         # types automatically, aligning on index in case of pandas objects
-        plot_data = pd.DataFrame(plot_data, columns=self.semantics)
+        plot_data = pd.DataFrame(plot_data)
 
         # Reduce the variables dictionary to fields with valid data
         variables = {
@@ -849,15 +919,21 @@ class VectorPlotter:
 
         return plot_data, variables
 
-    def _semantic_subsets(self, grouping_semantics, reverse=False):
+    def iter_data(
+        self, grouping_vars=None, reverse=False, from_comp_data=False,
+    ):
         """Generator for getting subsets of data defined by semantic variables.
+
+        Also injects "col" and "row" into grouping semantics.
 
         Parameters
         ----------
-        grouping_semantics : list of strings
+        grouping_vars : string or list of strings
             Semantic variables that define the subsets of data.
         reverse : bool, optional
             If True, reverse the order of iteration.
+        from_comp_data : bool, optional
+            If True, use self.comp_data rather than self.plot_data
 
         Yields
         ------
@@ -867,25 +943,40 @@ class VectorPlotter:
             Subset of ``plot_data`` for this combination of semantic values.
 
         """
-        if isinstance(grouping_semantics, str):
-            grouping_semantics = [grouping_semantics]
+        # TODO should this default to using all (non x/y?) semantics?
+        # or define groupping vars somewhere?
+        if grouping_vars is None:
+            grouping_vars = []
+        elif isinstance(grouping_vars, str):
+            grouping_vars = [grouping_vars]
+        elif isinstance(grouping_vars, tuple):
+            grouping_vars = list(grouping_vars)
+
+        # Always insert faceting variables
+        facet_vars = {"col", "row"}
+        grouping_vars.extend(
+            facet_vars & set(self.variables) - set(grouping_vars)
+        )
 
         # Reduce to the semantics used in this plot
-        grouping_semantics = [
-            var for var in grouping_semantics if var in self.variables
+        grouping_vars = [
+            var for var in grouping_vars if var in self.variables
         ]
 
-        if grouping_semantics:
+        if from_comp_data:
+            data = self.comp_data
+        else:
+            data = self.plot_data
 
-            grouped_data = self.plot_data.groupby(
-                grouping_semantics, sort=False, as_index=False
+        if grouping_vars:
+
+            grouped_data = data.groupby(
+                grouping_vars, sort=False, as_index=False
             )
 
             grouping_keys = []
-            for var in grouping_semantics:
-                # TODO this is messy, add "semantic levels" property?
-                map_obj = getattr(self, f"_{var}_map")
-                grouping_keys.append(map_obj.levels)
+            for var in grouping_vars:
+                grouping_keys.append(self.var_levels.get(var, []))
 
             iter_keys = itertools.product(*grouping_keys)
             if reverse:
@@ -901,18 +992,188 @@ class VectorPlotter:
                 except KeyError:
                     continue
 
-                yield dict(zip(grouping_semantics, key)), data_subset
+                sub_vars = dict(zip(grouping_vars, key))
+
+                yield sub_vars, data_subset
 
         else:
 
-            yield {}, self.plot_data
+            yield {}, data
+
+    @property
+    def comp_data(self):
+        """Dataframe with numeric x and y, after unit conversion and log scaling."""
+        if not hasattr(self, "ax"):
+            # Probably a good idea, but will need a bunch of tests updated
+            # Most of these tests should just use the external interface
+            # Then this can be re-enabled.
+            # raise AttributeError("No Axes attached to plotter")
+            return self.plot_data
+
+        if not hasattr(self, "_comp_data"):
+
+            comp_data = (
+                self.plot_data
+                .copy(deep=False)
+                .drop(["x", "y"], axis=1, errors="ignore")
+            )
+            for var in "yx":
+                if var not in self.variables:
+                    continue
+
+                # Get a corresponding axis object so that we can convert the units
+                # to matplotlib's numeric representation, which we can compute on
+                # This is messy and it would probably be better for VectorPlotter
+                # to manage its own converters (using the matplotlib tools).
+                # XXX Currently does not support unshared categorical axes!
+                # (But see comment in _attach about how those don't exist)
+                if self.ax is None:
+                    ax = self.facets.axes.flat[0]
+                else:
+                    ax = self.ax
+                axis = getattr(ax, f"{var}axis")
+
+                comp_var = axis.convert_units(self.plot_data[var])
+                if axis.get_scale() == "log":
+                    comp_var = np.log10(comp_var)
+                comp_data.insert(0, var, comp_var)
+
+            self._comp_data = comp_data
+
+        return self._comp_data
+
+    def _get_axes(self, sub_vars):
+        """Return an Axes object based on existence of row/col variables."""
+        row = sub_vars.get("row", None)
+        col = sub_vars.get("col", None)
+        if row is not None and col is not None:
+            return self.facets.axes_dict[(row, col)]
+        elif row is not None:
+            return self.facets.axes_dict[row]
+        elif col is not None:
+            return self.facets.axes_dict[col]
+        elif self.ax is None:
+            return self.facets.ax
+        else:
+            return self.ax
+
+    def _attach(self, obj, allowed_types=None, log_scale=None):
+        """Associate the plotter with an Axes manager and initialize its units.
+
+        Parameters
+        ----------
+        obj : :class:`matplotlib.axes.Axes` or :class:'FacetGrid`
+            Structural object that we will eventually plot onto.
+        allowed_types : str or list of str
+            If provided, raise when either the x or y variable does not have
+            one of the declared seaborn types.
+        log_scale : bool, number, or pair of bools or numbers
+            If not False, set the axes to use log scaling, with the given
+            base or defaulting to 10. If a tuple, interpreted as separate
+            arguments for the x and y axes.
+
+        """
+        from .axisgrid import FacetGrid
+        if isinstance(obj, FacetGrid):
+            self.ax = None
+            self.facets = obj
+            ax_list = obj.axes.flatten()
+            if obj.col_names is not None:
+                self.var_levels["col"] = obj.col_names
+            if obj.row_names is not None:
+                self.var_levels["row"] = obj.row_names
+        else:
+            self.ax = obj
+            self.facets = None
+            ax_list = [obj]
+
+        if allowed_types is None:
+            allowed_types = ["numeric", "datetime", "categorical"]
+        elif isinstance(allowed_types, str):
+            allowed_types = [allowed_types]
+
+        for var in set("xy").intersection(self.variables):
+            # Check types of x/y variables
+            var_type = self.var_types[var]
+            if var_type not in allowed_types:
+                err = (
+                    f"The {var} variable is {var_type}, but one of "
+                    f"{allowed_types} is required"
+                )
+                raise TypeError(err)
+
+            # Register with the matplotlib unit conversion machinery
+            # Perhaps cleaner to manage our own transform objects?
+            # XXX Currently this does not allow "unshared" categorical axes
+            # We could add metadata to a FacetGrid and set units based on that.
+            # See also comment in comp_data, which only uses a single axes to do
+            # its mapping, meaning that it won't handle unshared axes well either.
+            for ax in ax_list:
+                axis = getattr(ax, f"{var}axis")
+                seed_data = self.plot_data[var]
+                if var_type == "categorical":
+                    seed_data = categorical_order(seed_data)
+                axis.update_units(seed_data)
+
+        # For categorical y, we want the "first" level to be at the top of the axis
+        if self.var_types.get("y", None) == "categorical":
+            for ax in ax_list:
+                try:
+                    ax.yaxis.set_inverted(True)
+                except AttributeError:  # mpl < 3.1
+                    if not ax.yaxis_inverted():
+                        ax.invert_yaxis()
+
+        # Possibly log-scale one or both axes
+        if log_scale is not None:
+            # Allow single value or x, y tuple
+            try:
+                scalex, scaley = log_scale
+            except TypeError:
+                scalex = log_scale if "x" in self.variables else False
+                scaley = log_scale if "y" in self.variables else False
+
+            for axis, scale in zip("xy", (scalex, scaley)):
+                if scale:
+                    for ax in ax_list:
+                        set_scale = getattr(ax, f"set_{axis}scale")
+                        if scale is True:
+                            set_scale("log")
+                        else:
+                            if LooseVersion(mpl.__version__) >= "3.3":
+                                set_scale("log", base=scale)
+                            else:
+                                set_scale("log", **{f"base{axis}": scale})
+
+    def _log_scaled(self, axis):
+        """Return True if specified axis is log scaled on all attached axes."""
+        if self.ax is None:
+            axes_list = self.facets.axes.flatten()
+        else:
+            axes_list = [self.ax]
+
+        log_scaled = []
+        for ax in axes_list:
+            data_axis = getattr(ax, f"{axis}axis")
+            log_scaled.append(data_axis.get_scale() == "log")
+
+        if any(log_scaled) and not all(log_scaled):
+            raise RuntimeError("Axis scaling is not consistent")
+
+        return any(log_scaled)
 
     def _add_axis_labels(self, ax, default_x="", default_y=""):
-
+        """Add axis labels if not present, set visibility to match ticklabels."""
+        # TODO ax could default to None and use attached axes if present
+        # but what to do about the case of facets? Currently using FacetGrid's
+        # set_axis_labels method, which doesn't add labels to the interior even
+        # when the axes are not shared. Maybe that makes sense?
         if not ax.get_xlabel():
-            ax.set_xlabel(self.variables.get("x", default_x))
+            x_visible = any(t.get_visible() for t in ax.get_xticklabels())
+            ax.set_xlabel(self.variables.get("x", default_x), visible=x_visible)
         if not ax.get_ylabel():
-            ax.set_ylabel(self.variables.get("y", default_y))
+            y_visible = any(t.get_visible() for t in ax.get_yticklabels())
+            ax.set_ylabel(self.variables.get("y", default_y), visible=y_visible)
 
 
 def variable_type(vector, boolean_type="numeric"):

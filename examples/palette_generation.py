@@ -8,7 +8,7 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-sns.set(style="white")
+sns.set_theme(style="white")
 rs = np.random.RandomState(50)
 
 # Set up the matplotlib figure
@@ -21,17 +21,15 @@ for ax, s in zip(axes.flat, np.linspace(0, 3, 10)):
     cmap = sns.cubehelix_palette(start=s, light=1, as_cmap=True)
 
     # Generate and plot a random bivariate dataset
-    x, y = rs.randn(2, 50)
+    x, y = rs.normal(size=(2, 50))
     sns.kdeplot(
         x=x, y=y,
-        cmap=cmap,
-        fill=True,
-        cut=4,
-        thresh=.05,
-        levels=100,
+        cmap=cmap, fill=True,
+        clip=(-5, 5), cut=10,
+        thresh=0, levels=15,
         ax=ax,
     )
     ax.set_axis_off()
 
 ax.set(xlim=(-3.5, 3.5), ylim=(-3.5, 3.5))
-f.tight_layout()
+f.subplots_adjust(0, 0, 1, 1, .08, .08)

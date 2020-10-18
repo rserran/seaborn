@@ -42,7 +42,7 @@ class DocstringComponents:
         for p in params:
             name = p.name
             type = p.type
-            desc = "    \n".join(p.desc)
+            desc = "\n    ".join(p.desc)
             comp_dict[name] = f"{name} : {type}\n    {desc}"
 
         return cls(comp_dict)
@@ -84,8 +84,8 @@ hue_order : vector of strings
     hue_norm="""
 hue_norm : tuple or :class:`matplotlib.colors.Normalize`
     Either a pair of values that set the normalization range in data units
-    for numeric ``hue`` mapping. Can also be an object that will map from data
-    units into a [0, 1] interval. Usage implies numeric mapping.
+    or an object that will map from data units into a [0, 1] interval. Usage
+    implies numeric mapping.
     """,
     color="""
 color : :mod:`matplotlib color <matplotlib.colors>`
@@ -102,27 +102,80 @@ ax : :class:`matplotlib.axes.Axes`
 
 _core_returns = dict(
     ax="""
-ax : :class:`matplotlib.axes.Axes`
+:class:`matplotlib.axes.Axes`
     The matplotlib axes containing the plot.
+    """,
+    facetgrid="""
+:class:`FacetGrid`
+    An object managing one or more subplots that correspond to conditional data
+    subsets with convenient methods for batch-setting of axes attributes.
+    """,
+    jointgrid="""
+:class:`JointGrid`
+    An object managing multiple subplots that correspond to joint and marginal axes
+    for plotting a bivariate relationship or distribution.
+    """,
+    pairgrid="""
+:class:`PairGrid`
+    An object managing multiple subplots that correspond to joint and marginal axes
+    for pairwise combinations of multiple variables in a dataset.
     """,
 )
 
 
 _seealso_blurbs = dict(
 
+    # Relational plots
+    scatterplot="""
+scatterplot : Plot data using points.
+    """,
+    lineplot="""
+lineplot : Plot data using lines.
+    """,
+
     # Distribution plots
+    displot="""
+displot : Figure-level interface to distribution plot functions.
+    """,
+    histplot="""
+histplot : Plot a histogram of binned counts with optional normalization or smoothing.
+    """,
+    kdeplot="""
+kdeplot : Plot univariate or bivariate distributions using kernel density estimation.
+    """,
+    ecdfplot="""
+ecdfplot : Plot empirical cumulative distribution functions.
+    """,
     rugplot="""
 rugplot : Plot a tick at each observation value along the x and/or y axes.
     """,
 
     # Categorical plots
+    stripplot="""
+stripplot : Plot a categorical scatter with jitter.
+    """,
+    swarmplot="""
+swarmplot : Plot a categorical scatter with non-overlapping points.
+    """,
     violinplot="""
 violinplot : Draw an enhanced boxplot using kernel density estimation.
+    """,
+    pointplot="""
+pointplot : Plot point estimates and CIs using markers and lines.
     """,
 
     # Multiples
     jointplot="""
 jointplot : Draw a bivariate plot with univariate marginal distributions.
+    """,
+    pairplot="""
+jointplot : Draw multiple bivariate plots with univariate marginal distributions.
+    """,
+    jointgrid="""
+JointGrid : Set up a figure with joint and marginal views on bivariate data.
+    """,
+    pairgrid="""
+PairGrid : Set up a figure with joint and marginal views on multiple variables.
     """,
 )
 

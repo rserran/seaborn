@@ -7,6 +7,7 @@ import pytest
 from numpy.testing import assert_array_equal
 from pandas.testing import assert_frame_equal
 
+from ..axisgrid import FacetGrid
 from .._core import (
     SemanticMapping,
     HueMapping,
@@ -77,9 +78,9 @@ class TestHueMapping:
         assert p._hue_map.palette == palette
         assert p._hue_map.levels == hue_order
 
-    def test_hue_map_null(self, long_df, null_series):
+    def test_hue_map_null(self, flat_series, null_series):
 
-        p = VectorPlotter(variables=dict(hue=null_series))
+        p = VectorPlotter(variables=dict(x=flat_series, hue=null_series))
         m = HueMapping(p)
         assert m.levels is None
         assert m.map_type is None
@@ -152,6 +153,10 @@ class TestHueMapping:
         expected_lookup_table = dict(zip(hue_levels, expected_colors))
         assert m.lookup_table == expected_lookup_table
 
+        # Test missing data
+        m = HueMapping(p)
+        assert m(np.nan) == (0, 0, 0, 0)
+
         # Test default palette with many levels
         x = y = np.arange(26)
         hue = pd.Series(list("abcdefghijklmnopqrstuvwxyz"))
@@ -179,7 +184,7 @@ class TestHueMapping:
         # Test Timestamp data
         p = VectorPlotter(data=long_df, variables=dict(x="x", y="y", hue="t"))
         m = HueMapping(p)
-        assert m.levels == [pd.Timestamp('2005-02-25')]
+        assert m.levels == [pd.Timestamp(t) for t in long_df["t"].unique()]
         assert m.map_type == "datetime"
 
         # Test excplicit categories
@@ -336,9 +341,9 @@ class TestSizeMapping:
         assert p._size_map.lookup_table == dict(zip(size_order, sizes))
         assert p._size_map.levels == size_order
 
-    def test_size_map_null(self, long_df, null_series):
+    def test_size_map_null(self, flat_series, null_series):
 
-        p = VectorPlotter(variables=dict(size=null_series))
+        p = VectorPlotter(variables=dict(x=flat_series, size=null_series))
         m = HueMapping(p)
         assert m.levels is None
         assert m.map_type is None
@@ -415,7 +420,13 @@ class TestSizeMapping:
         m = SizeMapping(p, sizes=sizes)
         assert m.lookup_table == sizes
 
-        # Test excplicit categories
+        # Test specified size range
+        sizes = (2, 5)
+        m = SizeMapping(p, sizes=sizes)
+        values = np.linspace(*sizes, len(m.levels))[::-1]
+        assert m.lookup_table == dict(zip(m.levels, values))
+
+        # Test explicit categories
         p = VectorPlotter(data=long_df, variables=dict(x="x", size="a_cat"))
         m = SizeMapping(p)
         assert m.levels == long_df["a_cat"].cat.categories.tolist()
@@ -477,9 +488,9 @@ class TestStyleMapping:
         assert p._style_map.levels == style_order
         assert p._style_map(style_order, "marker") == markers
 
-    def test_style_map_null(self, long_df, null_series):
+    def test_style_map_null(self, flat_series, null_series):
 
-        p = VectorPlotter(variables=dict(style=null_series))
+        p = VectorPlotter(variables=dict(x=flat_series, style=null_series))
         m = HueMapping(p)
         assert m.levels is None
         assert m.map_type is None
@@ -591,16 +602,40 @@ class TestVectorPlotter:
         assert p.variables["x"] == expected_x_name
         assert p.variables["y"] == expected_y_name
 
-    # TODO note that most of the other tests that excercise the core
+    # TODO note that most of the other tests that exercise the core
     # variable assignment code still live in test_relational
 
-    def test_semantic_subset_quantitites(self, long_df):
+    def test_wide_semantic_error(self, wide_df):
+
+        err = "The following variable cannot be assigned with wide-form data: `hue`"
+        with pytest.raises(ValueError, match=err):
+            VectorPlotter(data=wide_df, variables={"hue": "a"})
+
+    def test_long_unknown_error(self, long_df):
+
+        err = "Could not interpret value `what` for parameter `hue`"
+        with pytest.raises(ValueError, match=err):
+            VectorPlotter(data=long_df, variables={"x": "x", "hue": "what"})
+
+    def test_long_unmatched_size_error(self, long_df, flat_array):
+
+        err = "Length of ndarray vectors must match length of `data`"
+        with pytest.raises(ValueError, match=err):
+            VectorPlotter(data=long_df, variables={"x": "x", "hue": flat_array})
+
+    def test_wide_categorical_columns(self, wide_df):
+
+        wide_df.columns = pd.CategoricalIndex(wide_df.columns)
+        p = VectorPlotter(data=wide_df)
+        assert_array_equal(p.plot_data["hue"].unique(), ["a", "b", "c"])
+
+    def test_iter_data_quantitites(self, long_df):
 
         p = VectorPlotter(
             data=long_df,
             variables=dict(x="x", y="y"),
         )
-        out = p._semantic_subsets("hue")
+        out = p.iter_data("hue")
         assert len(list(out)) == 1
 
         var = "a"
@@ -613,7 +648,7 @@ class TestVectorPlotter:
                 data=long_df,
                 variables={"x": "x", "y": "y", semantic: var},
             )
-            out = p._semantic_subsets(semantics)
+            out = p.iter_data(semantics)
             assert len(list(out)) == n_subsets
 
         var = "a"
@@ -623,12 +658,12 @@ class TestVectorPlotter:
             data=long_df,
             variables=dict(x="x", y="y", hue=var, style=var),
         )
-        out = p._semantic_subsets(semantics)
+        out = p.iter_data(semantics)
         assert len(list(out)) == n_subsets
 
         # --
 
-        out = p._semantic_subsets(semantics, reverse=True)
+        out = p.iter_data(semantics, reverse=True)
         assert len(list(out)) == n_subsets
 
         # --
@@ -641,7 +676,7 @@ class TestVectorPlotter:
             data=long_df,
             variables=dict(x="x", y="y", hue=var1, style=var2),
         )
-        out = p._semantic_subsets(["hue"])
+        out = p.iter_data(["hue"])
         assert len(list(out)) == n_subsets
 
         n_subsets = len(set(list(map(tuple, long_df[[var1, var2]].values))))
@@ -650,14 +685,14 @@ class TestVectorPlotter:
             data=long_df,
             variables=dict(x="x", y="y", hue=var1, style=var2),
         )
-        out = p._semantic_subsets(semantics)
+        out = p.iter_data(semantics)
         assert len(list(out)) == n_subsets
 
         p = VectorPlotter(
             data=long_df,
             variables=dict(x="x", y="y", hue=var1, size=var2, style=var1),
         )
-        out = p._semantic_subsets(semantics)
+        out = p.iter_data(semantics)
         assert len(list(out)) == n_subsets
 
         # --
@@ -670,10 +705,10 @@ class TestVectorPlotter:
             data=long_df,
             variables=dict(x="x", y="y", hue=var1, size=var2, style=var3),
         )
-        out = p._semantic_subsets(semantics)
+        out = p.iter_data(semantics)
         assert len(list(out)) == n_subsets
 
-    def test_semantic_subset_keys(self, long_df):
+    def test_iter_data_keys(self, long_df):
 
         semantics = ["hue", "size", "style"]
 
@@ -681,7 +716,7 @@ class TestVectorPlotter:
             data=long_df,
             variables=dict(x="x", y="y"),
         )
-        for sub_vars, _ in p._semantic_subsets("hue"):
+        for sub_vars, _ in p.iter_data("hue"):
             assert sub_vars == {}
 
         # --
@@ -692,7 +727,7 @@ class TestVectorPlotter:
             data=long_df,
             variables=dict(x="x", y="y", hue=var),
         )
-        for sub_vars, _ in p._semantic_subsets("hue"):
+        for sub_vars, _ in p.iter_data("hue"):
             assert list(sub_vars) == ["hue"]
             assert sub_vars["hue"] in long_df[var].values
 
@@ -700,7 +735,7 @@ class TestVectorPlotter:
             data=long_df,
             variables=dict(x="x", y="y", size=var),
         )
-        for sub_vars, _ in p._semantic_subsets("size"):
+        for sub_vars, _ in p.iter_data("size"):
             assert list(sub_vars) == ["size"]
             assert sub_vars["size"] in long_df[var].values
 
@@ -708,7 +743,7 @@ class TestVectorPlotter:
             data=long_df,
             variables=dict(x="x", y="y", hue=var, style=var),
         )
-        for sub_vars, _ in p._semantic_subsets(semantics):
+        for sub_vars, _ in p.iter_data(semantics):
             assert list(sub_vars) == ["hue", "style"]
             assert sub_vars["hue"] in long_df[var].values
             assert sub_vars["style"] in long_df[var].values
@@ -720,12 +755,22 @@ class TestVectorPlotter:
             data=long_df,
             variables=dict(x="x", y="y", hue=var1, size=var2),
         )
-        for sub_vars, _ in p._semantic_subsets(semantics):
+        for sub_vars, _ in p.iter_data(semantics):
             assert list(sub_vars) == ["hue", "size"]
             assert sub_vars["hue"] in long_df[var1].values
             assert sub_vars["size"] in long_df[var2].values
 
-    def test_semantic_subset_values(self, long_df):
+        semantics = ["hue", "col", "row"]
+        p = VectorPlotter(
+            data=long_df,
+            variables=dict(x="x", y="y", hue=var1, col=var2),
+        )
+        for sub_vars, _ in p.iter_data("hue"):
+            assert list(sub_vars) == ["hue", "col"]
+            assert sub_vars["hue"] in long_df[var1].values
+            assert sub_vars["col"] in long_df[var2].values
+
+    def test_iter_data_values(self, long_df):
 
         p = VectorPlotter(
             data=long_df,
@@ -733,7 +778,7 @@ class TestVectorPlotter:
         )
 
         p.sort = True
-        _, sub_data = next(p._semantic_subsets("hue"))
+        _, sub_data = next(p.iter_data("hue"))
         assert_frame_equal(sub_data, p.plot_data)
 
         p = VectorPlotter(
@@ -741,7 +786,7 @@ class TestVectorPlotter:
             variables=dict(x="x", y="y", hue="a"),
         )
 
-        for sub_vars, sub_data in p._semantic_subsets("hue"):
+        for sub_vars, sub_data in p.iter_data("hue"):
             rows = p.plot_data["hue"] == sub_vars["hue"]
             assert_frame_equal(sub_data, p.plot_data[rows])
 
@@ -749,19 +794,19 @@ class TestVectorPlotter:
             data=long_df,
             variables=dict(x="x", y="y", hue="a", size="s"),
         )
-        for sub_vars, sub_data in p._semantic_subsets(["hue", "size"]):
+        for sub_vars, sub_data in p.iter_data(["hue", "size"]):
             rows = p.plot_data["hue"] == sub_vars["hue"]
             rows &= p.plot_data["size"] == sub_vars["size"]
             assert_frame_equal(sub_data, p.plot_data[rows])
 
-    def test_semantic_subset_reverse(self, long_df):
+    def test_iter_data_reverse(self, long_df):
 
         reversed_order = categorical_order(long_df["a"])[::-1]
         p = VectorPlotter(
             data=long_df,
             variables=dict(x="x", y="y", hue="a")
         )
-        iterator = p._semantic_subsets("hue", reverse=True)
+        iterator = p.iter_data("hue", reverse=True)
         for i, (sub_vars, _) in enumerate(iterator):
             assert sub_vars["hue"] == reversed_order[i]
 
@@ -800,6 +845,214 @@ class TestVectorPlotter:
         p._add_axis_labels(ax)
         assert ax.get_xlabel() == "existing"
         assert ax.get_ylabel() == "also existing"
+
+        f, (ax1, ax2) = plt.subplots(1, 2, sharey=True)
+        p = VectorPlotter(data=long_df, variables=dict(x="x", y="y"))
+
+        p._add_axis_labels(ax1)
+        p._add_axis_labels(ax2)
+
+        assert ax1.get_xlabel() == "x"
+        assert ax1.get_ylabel() == "y"
+        assert ax1.yaxis.label.get_visible()
+
+        assert ax2.get_xlabel() == "x"
+        assert ax2.get_ylabel() == "y"
+        assert not ax2.yaxis.label.get_visible()
+
+    @pytest.mark.parametrize(
+        "variables",
+        [
+            dict(x="x", y="y"),
+            dict(x="x"),
+            dict(y="y"),
+            dict(x="t", y="y"),
+            dict(x="x", y="a"),
+        ]
+    )
+    def test_attach_basics(self, long_df, variables):
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables=variables)
+        p._attach(ax)
+        assert p.ax is ax
+
+    def test_attach_disallowed(self, long_df):
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables={"x": "a"})
+
+        with pytest.raises(TypeError):
+            p._attach(ax, allowed_types="numeric")
+
+        with pytest.raises(TypeError):
+            p._attach(ax, allowed_types=["datetime", "numeric"])
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables={"x": "x"})
+
+        with pytest.raises(TypeError):
+            p._attach(ax, allowed_types="categorical")
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables={"x": "x", "y": "t"})
+
+        with pytest.raises(TypeError):
+            p._attach(ax, allowed_types=["numeric", "categorical"])
+
+    def test_attach_log_scale(self, long_df):
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables={"x": "x"})
+        p._attach(ax, log_scale=True)
+        assert ax.xaxis.get_scale() == "log"
+        assert ax.yaxis.get_scale() == "linear"
+        assert p._log_scaled("x")
+        assert not p._log_scaled("y")
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables={"x": "x"})
+        p._attach(ax, log_scale=2)
+        assert ax.xaxis.get_scale() == "log"
+        assert ax.yaxis.get_scale() == "linear"
+        assert p._log_scaled("x")
+        assert not p._log_scaled("y")
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables={"y": "y"})
+        p._attach(ax, log_scale=True)
+        assert ax.xaxis.get_scale() == "linear"
+        assert ax.yaxis.get_scale() == "log"
+        assert not p._log_scaled("x")
+        assert p._log_scaled("y")
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables={"x": "x", "y": "y"})
+        p._attach(ax, log_scale=True)
+        assert ax.xaxis.get_scale() == "log"
+        assert ax.yaxis.get_scale() == "log"
+        assert p._log_scaled("x")
+        assert p._log_scaled("y")
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables={"x": "x", "y": "y"})
+        p._attach(ax, log_scale=(True, False))
+        assert ax.xaxis.get_scale() == "log"
+        assert ax.yaxis.get_scale() == "linear"
+        assert p._log_scaled("x")
+        assert not p._log_scaled("y")
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables={"x": "x", "y": "y"})
+        p._attach(ax, log_scale=(False, 2))
+        assert ax.xaxis.get_scale() == "linear"
+        assert ax.yaxis.get_scale() == "log"
+        assert not p._log_scaled("x")
+        assert p._log_scaled("y")
+
+    def test_attach_converters(self, long_df):
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables={"x": "x", "y": "t"})
+        p._attach(ax)
+        assert ax.xaxis.converter is None
+        assert isinstance(ax.yaxis.converter, mpl.dates.DateConverter)
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables={"x": "a", "y": "y"})
+        p._attach(ax)
+        assert isinstance(ax.xaxis.converter, mpl.category.StrCategoryConverter)
+        assert ax.yaxis.converter is None
+
+    def test_attach_facets(self, long_df):
+
+        g = FacetGrid(long_df, col="a")
+        p = VectorPlotter(data=long_df, variables={"x": "x", "col": "a"})
+        p._attach(g)
+        assert p.ax is None
+        assert p.facets == g
+
+    def test_get_axes_single(self, long_df):
+
+        ax = plt.figure().subplots()
+        p = VectorPlotter(data=long_df, variables={"x": "x", "hue": "a"})
+        p._attach(ax)
+        assert p._get_axes({"hue": "a"}) is ax
+
+    def test_get_axes_facets(self, long_df):
+
+        g = FacetGrid(long_df, col="a")
+        p = VectorPlotter(data=long_df, variables={"x": "x", "col": "a"})
+        p._attach(g)
+        assert p._get_axes({"col": "b"}) is g.axes_dict["b"]
+
+        g = FacetGrid(long_df, col="a", row="c")
+        p = VectorPlotter(
+            data=long_df, variables={"x": "x", "col": "a", "row": "c"}
+        )
+        p._attach(g)
+        assert p._get_axes({"row": 1, "col": "b"}) is g.axes_dict[(1, "b")]
+
+    def test_comp_data(self, long_df):
+
+        p = VectorPlotter(data=long_df, variables={"x": "x", "y": "t"})
+
+        # We have disabled this check for now, while it remains part of
+        # the internal API, because it will require updating a number of tests
+        # with pytest.raises(AttributeError):
+        #     p.comp_data
+
+        _, ax = plt.subplots()
+        p._attach(ax)
+
+        assert_array_equal(p.comp_data["x"], p.plot_data["x"])
+        assert_array_equal(
+            p.comp_data["y"], ax.yaxis.convert_units(p.plot_data["y"])
+        )
+
+        p = VectorPlotter(data=long_df, variables={"x": "a"})
+
+        _, ax = plt.subplots()
+        p._attach(ax)
+
+        assert_array_equal(
+            p.comp_data["x"], ax.xaxis.convert_units(p.plot_data["x"])
+        )
+
+    def test_comp_data_log(self, long_df):
+
+        p = VectorPlotter(data=long_df, variables={"x": "z", "y": "y"})
+        _, ax = plt.subplots()
+        p._attach(ax, log_scale=(True, False))
+
+        assert_array_equal(
+            p.comp_data["x"], np.log10(p.plot_data["x"])
+        )
+        assert_array_equal(p.comp_data["y"], p.plot_data["y"])
+
+    def test_comp_data_category_order(self):
+
+        s = (pd.Series(["a", "b", "c", "a"], dtype="category")
+             .cat.set_categories(["b", "c", "a"], ordered=True))
+
+        p = VectorPlotter(variables={"x": s})
+        _, ax = plt.subplots()
+        p._attach(ax)
+        assert_array_equal(
+            p.comp_data["x"],
+            [2, 0, 1, 2],
+        )
+
+    def test_var_order(self, long_df):
+
+        order = ["c", "b", "a"]
+        for var in ["hue", "size", "style"]:
+            p = VectorPlotter(data=long_df, variables={"x": "x", var: "a"})
+
+            mapper = getattr(p, f"map_{var}")
+            mapper(order=order)
+
+            assert p.var_levels[var] == order
 
 
 class TestCoreFunc:

@@ -54,15 +54,20 @@ class Helpers:
         equal = True
 
         args = [
-            mpl.colors.hex2color(a) if isinstance(a, str) else a for a in args
+            mpl.colors.hex2color(a) if isinstance(a, str) and a.startswith("#") else a
+            for a in args
         ]
 
         if np.ndim(args[0]) < 2:
             args = [[a] for a in args]
 
         for c1, c2 in zip(*args):
-            c1 = mpl.colors.colorConverter.to_rgb(np.squeeze(c1))
-            c2 = mpl.colors.colorConverter.to_rgb(np.squeeze(c1))
+            if isinstance(c1, np.ndarray):
+                c1 = c1.squeeze()
+            if isinstance(c2, np.ndarray):
+                c2 = c2.squeeze()
+            c1 = mpl.colors.to_rgb(c1)
+            c2 = mpl.colors.to_rgb(c2)
             equal &= c1 == c2
 
         return equal
@@ -102,8 +107,6 @@ class TestRelationalPlotter(Helpers):
         expected_style = expected_hue
         assert_array_equal(style, expected_style)
 
-        assert p.plot_data["size"].isnull().all()
-
         assert p.variables["x"] == wide_df.index.name
         assert p.variables["y"] is None
         assert p.variables["hue"] == wide_df.columns.name
@@ -138,8 +141,6 @@ class TestRelationalPlotter(Helpers):
         expected_style = expected_hue
         assert_array_equal(style, expected_style)
 
-        assert p.plot_data["size"].isnull().all()
-
         assert p.variables["x"] == numeric_df.index.name
         assert p.variables["y"] is None
         assert p.variables["hue"] == numeric_df.columns.name
@@ -171,8 +172,6 @@ class TestRelationalPlotter(Helpers):
         expected_style = expected_hue
         assert_array_equal(style, expected_style)
 
-        assert p.plot_data["size"].isnull().all()
-
         assert p.variables["x"] is None
         assert p.variables["y"] is None
         assert p.variables["hue"] is None
@@ -194,10 +193,6 @@ class TestRelationalPlotter(Helpers):
         expected_y = flat_array
         assert_array_equal(y, expected_y)
 
-        assert p.plot_data["hue"].isnull().all()
-        assert p.plot_data["style"].isnull().all()
-        assert p.plot_data["size"].isnull().all()
-
         assert p.variables["x"] is None
         assert p.variables["y"] is None
 
@@ -216,10 +211,6 @@ class TestRelationalPlotter(Helpers):
         y = p.plot_data["y"]
         expected_y = flat_list
         assert_array_equal(y, expected_y)
-
-        assert p.plot_data["hue"].isnull().all()
-        assert p.plot_data["style"].isnull().all()
-        assert p.plot_data["size"].isnull().all()
 
         assert p.variables["x"] is None
         assert p.variables["y"] is None
@@ -278,8 +269,6 @@ class TestRelationalPlotter(Helpers):
         expected_style = expected_hue
         assert_array_equal(style, expected_style)
 
-        assert p.plot_data["size"].isnull().all()
-
         assert p.variables["x"] is None
         assert p.variables["y"] is None
         assert p.variables["hue"] is None
@@ -312,8 +301,6 @@ class TestRelationalPlotter(Helpers):
         style = p.plot_data["style"]
         expected_style = expected_hue
         assert_array_equal(style, expected_style)
-
-        assert p.plot_data["size"].isnull().all()
 
         assert p.variables["x"] is None
         assert p.variables["y"] is None
@@ -348,8 +335,6 @@ class TestRelationalPlotter(Helpers):
         expected_style = expected_hue
         assert_array_equal(style, expected_style)
 
-        assert p.plot_data["size"].isnull().all()
-
         assert p.variables["x"] is None
         assert p.variables["y"] is None
         assert p.variables["hue"] is None
@@ -382,8 +367,6 @@ class TestRelationalPlotter(Helpers):
         style = p.plot_data["style"]
         expected_style = expected_hue
         assert_array_equal(style, expected_style)
-
-        assert p.plot_data["size"].isnull().all()
 
         assert p.variables["x"] is None
         assert p.variables["y"] is None
@@ -418,8 +401,6 @@ class TestRelationalPlotter(Helpers):
         expected_style = expected_hue
         assert_array_equal(style, expected_style)
 
-        assert p.plot_data["size"].isnull().all()
-
         assert p.variables["x"] is None
         assert p.variables["y"] is None
         assert p.variables["hue"] is None
@@ -453,8 +434,6 @@ class TestRelationalPlotter(Helpers):
         expected_style = expected_hue
         assert_array_equal(style, expected_style)
 
-        assert p.plot_data["size"].isnull().all()
-
         assert p.variables["x"] is None
         assert p.variables["y"] is None
         assert p.variables["hue"] is None
@@ -469,9 +448,6 @@ class TestRelationalPlotter(Helpers):
         for key, val in long_semantics.items():
             assert_array_equal(p.plot_data[key], long_df[val])
 
-        for col in set(p.semantics) - set(long_semantics):
-            assert p.plot_data[col].isnull().all()
-
     def test_long_df_with_index(self, long_df, long_semantics):
 
         p = _RelationalPlotter(
@@ -483,9 +459,6 @@ class TestRelationalPlotter(Helpers):
 
         for key, val in long_semantics.items():
             assert_array_equal(p.plot_data[key], long_df[val])
-
-        for col in set(p.semantics) - set(long_semantics):
-            assert p.plot_data[col].isnull().all()
 
     def test_long_df_with_multiindex(self, long_df, long_semantics):
 
@@ -499,9 +472,6 @@ class TestRelationalPlotter(Helpers):
         for key, val in long_semantics.items():
             assert_array_equal(p.plot_data[key], long_df[val])
 
-        for col in set(p.semantics) - set(long_semantics):
-            assert p.plot_data[col].isnull().all()
-
     def test_long_dict(self, long_dict, long_semantics):
 
         p = _RelationalPlotter(
@@ -513,9 +483,6 @@ class TestRelationalPlotter(Helpers):
 
         for key, val in long_semantics.items():
             assert_array_equal(p.plot_data[key], pd.Series(long_dict[val]))
-
-        for col in set(p.semantics) - set(long_semantics):
-            assert p.plot_data[col].isnull().all()
 
     @pytest.mark.parametrize(
         "vector_type",
@@ -546,9 +513,6 @@ class TestRelationalPlotter(Helpers):
 
         for key, val in long_semantics.items():
             assert_array_equal(p.plot_data[key], long_df[val])
-
-        for col in set(p.semantics) - set(long_semantics):
-            assert p.plot_data[col].isnull().all()
 
     def test_long_undefined_variables(self, long_df):
 
@@ -742,12 +706,12 @@ class TestRelationalPlotter(Helpers):
 
         g = relplot(data=long_df, x="x", y="y", hue="a")
         texts = [t.get_text() for t in g._legend.texts]
-        expected_texts = np.append(["a"], long_df["a"].unique())
+        expected_texts = long_df["a"].unique()
         assert_array_equal(texts, expected_texts)
 
         g = relplot(data=long_df, x="x", y="y", hue="s", size="s")
         texts = [t.get_text() for t in g._legend.texts]
-        assert_array_equal(texts[1:], np.sort(texts[1:]))
+        assert_array_equal(texts, np.sort(texts))
 
         g = relplot(data=long_df, x="x", y="y", hue="a", legend=False)
         assert g._legend is None
@@ -878,8 +842,8 @@ class TestLinePlotter(Helpers):
         p.add_legend_data(ax)
         handles, labels = ax.get_legend_handles_labels()
         colors = [h.get_color() for h in handles]
-        assert labels == ["a"] + p._hue_map.levels
-        assert colors == ["w"] + p._hue_map(p._hue_map.levels)
+        assert labels == p._hue_map.levels
+        assert colors == p._hue_map(p._hue_map.levels)
 
         # --
 
@@ -894,10 +858,10 @@ class TestLinePlotter(Helpers):
         handles, labels = ax.get_legend_handles_labels()
         colors = [h.get_color() for h in handles]
         markers = [h.get_marker() for h in handles]
-        assert labels == ["a"] + p._hue_map.levels
-        assert labels == ["a"] + p._style_map.levels
-        assert colors == ["w"] + p._hue_map(p._hue_map.levels)
-        assert markers == [""] + p._style_map(p._style_map.levels, "marker")
+        assert labels == p._hue_map.levels
+        assert labels == p._style_map.levels
+        assert colors == p._hue_map(p._hue_map.levels)
+        assert markers == p._style_map(p._style_map.levels, "marker")
 
         # --
 
@@ -941,10 +905,10 @@ class TestLinePlotter(Helpers):
         handles, labels = ax.get_legend_handles_labels()
         colors = [h.get_color() for h in handles]
         widths = [h.get_linewidth() for h in handles]
-        assert labels == ["a"] + p._hue_map.levels
-        assert labels == ["a"] + p._size_map.levels
-        assert colors == ["w"] + p._hue_map(p._hue_map.levels)
-        assert widths == [0] + p._size_map(p._size_map.levels)
+        assert labels == p._hue_map.levels
+        assert labels == p._size_map.levels
+        assert colors == p._hue_map(p._hue_map.levels)
+        assert widths == p._size_map(p._size_map.levels)
 
         # --
 
@@ -963,7 +927,7 @@ class TestLinePlotter(Helpers):
         p.legend = "brief"
         p.add_legend_data(ax)
         handles, labels = ax.get_legend_handles_labels()
-        assert len(labels) == 4
+        assert len(labels) < len(p._hue_map.levels)
 
         p = _LinePlotter(variables=dict(x=x, y=y, size=z))
 
@@ -977,7 +941,19 @@ class TestLinePlotter(Helpers):
         p.legend = "brief"
         p.add_legend_data(ax)
         handles, labels = ax.get_legend_handles_labels()
-        assert len(labels) == 4
+        assert len(labels) < len(p._size_map.levels)
+
+        ax.clear()
+        p.legend = "auto"
+        p.add_legend_data(ax)
+        handles, labels = ax.get_legend_handles_labels()
+        assert len(labels) < len(p._size_map.levels)
+
+        ax.clear()
+        p.legend = True
+        p.add_legend_data(ax)
+        handles, labels = ax.get_legend_handles_labels()
+        assert len(labels) < len(p._size_map.levels)
 
         ax.clear()
         p.legend = "bad_value"
@@ -992,7 +968,17 @@ class TestLinePlotter(Helpers):
         p.map_hue(norm=mpl.colors.LogNorm()),
         p.add_legend_data(ax)
         handles, labels = ax.get_legend_handles_labels()
-        assert float(labels[2]) / float(labels[1]) == 10
+        assert float(labels[1]) / float(labels[0]) == 10
+
+        ax.clear()
+        p = _LinePlotter(
+            variables=dict(x=x, y=y, hue=z % 2),
+            legend="auto"
+        )
+        p.map_hue(norm=mpl.colors.LogNorm()),
+        p.add_legend_data(ax)
+        handles, labels = ax.get_legend_handles_labels()
+        assert labels == ["0", "1"]
 
         ax.clear()
         p = _LinePlotter(
@@ -1002,7 +988,7 @@ class TestLinePlotter(Helpers):
         p.map_size(norm=mpl.colors.LogNorm())
         p.add_legend_data(ax)
         handles, labels = ax.get_legend_handles_labels()
-        assert float(labels[2]) / float(labels[1]) == 10
+        assert float(labels[1]) / float(labels[0]) == 10
 
         ax.clear()
         p = _LinePlotter(
@@ -1011,9 +997,9 @@ class TestLinePlotter(Helpers):
             legend="brief",
         )
         p.add_legend_data(ax)
-        expected_levels = ['0.20', '0.24', '0.28', '0.32']
+        expected_labels = ['0.20', '0.22', '0.24', '0.26', '0.28']
         handles, labels = ax.get_legend_handles_labels()
-        assert labels == ["f"] + expected_levels
+        assert labels == expected_labels
 
         ax.clear()
         p = _LinePlotter(
@@ -1022,9 +1008,9 @@ class TestLinePlotter(Helpers):
             legend="brief",
         )
         p.add_legend_data(ax)
-        expected_levels = ['0.20', '0.24', '0.28', '0.32']
+        expected_levels = ['0.20', '0.22', '0.24', '0.26', '0.28']
         handles, labels = ax.get_legend_handles_labels()
-        assert labels == ["f"] + expected_levels
+        assert labels == expected_levels
 
     def test_plot(self, long_df, repeated_df):
 
@@ -1282,7 +1268,7 @@ class TestLinePlotter(Helpers):
         wide_df, wide_array,
         wide_list_of_series, wide_list_of_arrays, wide_list_of_lists,
         flat_array, flat_series, flat_list,
-        long_df, missing_df
+        long_df, missing_df, object_df
     ):
 
         f, ax = plt.subplots()
@@ -1326,6 +1312,9 @@ class TestLinePlotter(Helpers):
         lineplot(x="x", y=long_df.y.values, data=long_df)
         ax.clear()
 
+        lineplot(x="x", y="t", data=long_df)
+        ax.clear()
+
         lineplot(x="x", y="y", hue="a", data=long_df)
         ax.clear()
 
@@ -1351,6 +1340,15 @@ class TestLinePlotter(Helpers):
         ax.clear()
 
         lineplot(x="x", y="y", hue="a", size="s", data=missing_df)
+        ax.clear()
+
+        lineplot(x="x", y="y", hue="f", data=object_df)
+        ax.clear()
+
+        lineplot(x="x", y="y", hue="c", size="f", data=object_df)
+        ax.clear()
+
+        lineplot(x="x", y="y", hue="f", size="s", data=object_df)
         ax.clear()
 
 
@@ -1386,8 +1384,8 @@ class TestScatterPlotter(Helpers):
         p.add_legend_data(ax)
         handles, labels = ax.get_legend_handles_labels()
         colors = [h.get_facecolors()[0] for h in handles]
-        expected_colors = ["w"] + p._hue_map(p._hue_map.levels)
-        assert labels == ["a"] + p._hue_map.levels
+        expected_colors = p._hue_map(p._hue_map.levels)
+        assert labels == p._hue_map.levels
         assert self.colors_equal(colors, expected_colors)
 
         # --
@@ -1402,11 +1400,11 @@ class TestScatterPlotter(Helpers):
         p.add_legend_data(ax)
         handles, labels = ax.get_legend_handles_labels()
         colors = [h.get_facecolors()[0] for h in handles]
-        expected_colors = ["w"] + p._hue_map(p._hue_map.levels)
+        expected_colors = p._hue_map(p._hue_map.levels)
         paths = [h.get_paths()[0] for h in handles]
-        expected_paths = [null] + p._style_map(p._style_map.levels, "path")
-        assert labels == ["a"] + p._hue_map.levels
-        assert labels == ["a"] + p._style_map.levels
+        expected_paths = p._style_map(p._style_map.levels, "path")
+        assert labels == p._hue_map.levels
+        assert labels == p._style_map.levels
         assert self.colors_equal(colors, expected_colors)
         assert self.paths_equal(paths, expected_paths)
 
@@ -1448,11 +1446,11 @@ class TestScatterPlotter(Helpers):
         p.add_legend_data(ax)
         handles, labels = ax.get_legend_handles_labels()
         colors = [h.get_facecolors()[0] for h in handles]
-        expected_colors = ["w"] + p._hue_map(p._hue_map.levels)
+        expected_colors = p._hue_map(p._hue_map.levels)
         sizes = [h.get_sizes()[0] for h in handles]
-        expected_sizes = [0] + p._size_map(p._size_map.levels)
-        assert labels == ["a"] + p._hue_map.levels
-        assert labels == ["a"] + p._size_map.levels
+        expected_sizes = p._size_map(p._size_map.levels)
+        assert labels == p._hue_map.levels
+        assert labels == p._size_map.levels
         assert self.colors_equal(colors, expected_colors)
         assert sizes == expected_sizes
 
@@ -1469,8 +1467,8 @@ class TestScatterPlotter(Helpers):
         p.add_legend_data(ax)
         handles, labels = ax.get_legend_handles_labels()
         sizes = [h.get_sizes()[0] for h in handles]
-        expected_sizes = [0] + p._size_map(p._size_map.levels)
-        assert labels == ["s"] + [str(l) for l in p._size_map.levels]
+        expected_sizes = p._size_map(p._size_map.levels)
+        assert labels == [str(l) for l in p._size_map.levels]
         assert sizes == expected_sizes
 
         # --
@@ -1486,8 +1484,8 @@ class TestScatterPlotter(Helpers):
         p.add_legend_data(ax)
         handles, labels = ax.get_legend_handles_labels()
         sizes = [h.get_sizes()[0] for h in handles]
-        expected_sizes = [0] + p._size_map(p._size_map.levels)
-        assert labels == ["s"] + [str(l) for l in p._size_map.levels]
+        expected_sizes = p._size_map(p._size_map.levels)
+        assert labels == [str(l) for l in p._size_map.levels]
         assert sizes == expected_sizes
 
         # --
@@ -1509,7 +1507,7 @@ class TestScatterPlotter(Helpers):
         p.legend = "brief"
         p.add_legend_data(ax)
         handles, labels = ax.get_legend_handles_labels()
-        assert len(labels) == 4
+        assert len(labels) < len(p._hue_map.levels)
 
         p = _ScatterPlotter(
             variables=dict(x=x, y=y, size=z),
@@ -1525,7 +1523,7 @@ class TestScatterPlotter(Helpers):
         p.legend = "brief"
         p.add_legend_data(ax)
         handles, labels = ax.get_legend_handles_labels()
-        assert len(labels) == 4
+        assert len(labels) < len(p._size_map.levels)
 
         ax.clear()
         p.legend = "bad_value"
@@ -1692,6 +1690,13 @@ class TestScatterPlotter(Helpers):
         scatterplot(data=long_df, x="x", y="y", linewidth=lw)
         assert ax.collections[0].get_linewidths().item() == lw
 
+    def test_datetime_scale(self, long_df):
+
+        ax = scatterplot(data=long_df, x="t", y="y")
+        # Check that we avoid weird matplotlib default auto scaling
+        # https://github.com/matplotlib/matplotlib/issues/17586
+        ax.get_xlim()[0] > ax.xaxis.convert_units(np.datetime64("2002-01-01"))
+
     def test_scatterplot_vs_relplot(self, long_df, long_semantics):
 
         ax = scatterplot(data=long_df, **long_semantics)
@@ -1709,7 +1714,7 @@ class TestScatterPlotter(Helpers):
         wide_df, wide_array,
         flat_series, flat_array, flat_list,
         wide_list_of_series, wide_list_of_arrays, wide_list_of_lists,
-        long_df, missing_df
+        long_df, missing_df, object_df
     ):
 
         f, ax = plt.subplots()
@@ -1778,4 +1783,13 @@ class TestScatterPlotter(Helpers):
         ax.clear()
 
         scatterplot(x="x", y="y", hue="a", size="s", data=missing_df)
+        ax.clear()
+
+        scatterplot(x="x", y="y", hue="f", data=object_df)
+        ax.clear()
+
+        scatterplot(x="x", y="y", hue="c", size="f", data=object_df)
+        ax.clear()
+
+        scatterplot(x="x", y="y", hue="f", size="s", data=object_df)
         ax.clear()

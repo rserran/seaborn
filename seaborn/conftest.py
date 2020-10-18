@@ -1,8 +1,22 @@
 import numpy as np
 import pandas as pd
+import datetime
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def remove_pandas_unit_conversion():
+    # Prior to pandas 1.0, it registered its own datetime converters,
+    # but they are less powerful than what matplotlib added in 2.2,
+    # and we rely on that functionality in seaborn.
+    # https://github.com/matplotlib/matplotlib/pull/9779
+    # https://github.com/pandas-dev/pandas/issues/27036
+    mpl.units.registry[np.datetime64] = mpl.dates.DateConverter()
+    mpl.units.registry[datetime.date] = mpl.dates.DateConverter()
+    mpl.units.registry[datetime.datetime] = mpl.dates.DateConverter()
 
 
 @pytest.fixture(autouse=True)
@@ -135,10 +149,11 @@ def long_df(rng):
     df = pd.DataFrame(dict(
         x=rng.uniform(0, 20, n).round().astype("int"),
         y=rng.normal(size=n),
+        z=rng.lognormal(size=n),
         a=rng.choice(list("abc"), n),
         b=rng.choice(list("mnop"), n),
-        c=rng.choice([0, 1], n),
-        t=np.repeat(np.datetime64('2005-02-25'), n),
+        c=rng.choice([0, 1], n, [.3, .7]),
+        t=rng.choice(np.arange("2004-07-30", "2007-07-30", dtype="datetime64[Y]"), n),
         s=rng.choice([2, 4, 8], n),
         f=rng.choice([0.2, 0.3], n),
     ))
@@ -182,6 +197,16 @@ def missing_df(rng, long_df):
 
 
 @pytest.fixture
-def null_series():
+def object_df(rng, long_df):
 
-    return pd.Series(index=np.arange(20), dtype='float64')
+    df = long_df.copy()
+    # objectify numeric columns
+    for col in ["c", "s", "f"]:
+        df[col] = df[col].astype(object)
+    return df
+
+
+@pytest.fixture
+def null_series(flat_series):
+
+    return pd.Series(index=flat_series.index, dtype='float64')

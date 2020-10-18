@@ -14,7 +14,7 @@ from .. import categorical as cat
 from .. import palettes
 
 
-class CategoricalFixture(object):
+class CategoricalFixture:
     """Test boxplot (also base class for things like violinplots)."""
     rs = np.random.RandomState(30)
     n_total = 60
@@ -78,7 +78,8 @@ class TestCategoricalPlotter(CategoricalFixture):
 
         # Test an object array that looks 1D but isn't
         x_notreally_1d = np.array([self.x.ravel(),
-                                   self.x.ravel()[:int(self.n_total / 2)]])
+                                   self.x.ravel()[:int(self.n_total / 2)]],
+                                  dtype=object)
         p.establish_variables(data=x_notreally_1d)
         nt.assert_equal(len(p.plot_data), 2)
         nt.assert_equal(len(p.plot_data[0]), self.n_total)
@@ -2606,6 +2607,51 @@ class TestCatPlot(CategoricalFixture):
         want_lines = self.g.unique().size + 1
         nt.assert_equal(len(g.ax.lines), want_lines)
 
+    def test_share_xy(self):
+
+        # Test default behavior works
+        g = cat.catplot(x="g", y="y", col="g", data=self.df, sharex=True)
+        for ax in g.axes.flat:
+            assert len(ax.collections) == len(self.df.g.unique())
+
+        g = cat.catplot(x="y", y="g", col="g", data=self.df, sharey=True)
+        for ax in g.axes.flat:
+            assert len(ax.collections) == len(self.df.g.unique())
+
+        # Test unsharing works
+        with pytest.warns(UserWarning):
+            g = cat.catplot(x="g", y="y", col="g", data=self.df, sharex=False)
+            for ax in g.axes.flat:
+                assert len(ax.collections) == 1
+
+        with pytest.warns(UserWarning):
+            g = cat.catplot(x="y", y="g", col="g", data=self.df, sharey=False)
+            for ax in g.axes.flat:
+                assert len(ax.collections) == 1
+
+        # Make sure no warning is raised if color is provided on unshared plot
+        with pytest.warns(None) as record:
+            g = cat.catplot(
+                x="g", y="y", col="g", data=self.df, sharex=False, color="b"
+            )
+            assert not len(record)
+
+        with pytest.warns(None) as record:
+            g = cat.catplot(
+                x="y", y="g", col="g", data=self.df, sharey=False, color="r"
+            )
+            assert not len(record)
+
+        # Make sure order is used if given, regardless of sharex value
+        order = self.df.g.unique()
+        g = cat.catplot(x="g", y="y", col="g", data=self.df, sharex=False, order=order)
+        for ax in g.axes.flat:
+            assert len(ax.collections) == len(self.df.g.unique())
+
+        g = cat.catplot(x="y", y="g", col="g", data=self.df, sharey=False, order=order)
+        for ax in g.axes.flat:
+            assert len(ax.collections) == len(self.df.g.unique())
+
 
 class TestBoxenPlotter(CategoricalFixture):
 
@@ -2632,12 +2678,15 @@ class TestBoxenPlotter(CategoricalFixture):
         return np.percentile(data, q)
 
     def test_box_ends_finite(self):
+
         p = cat._LVPlotter(**self.default_kws)
         p.establish_variables("g", "y", data=self.df)
-        box_k = np.asarray([[b, k]
-                           for b, k in map(p._lv_box_ends, p.plot_data)])
-        box_ends = box_k[:, 0]
-        k_vals = box_k[:, 1]
+        box_ends = []
+        k_vals = []
+        for s in p.plot_data:
+            b, k = p._lv_box_ends(s)
+            box_ends.append(b)
+            k_vals.append(k)
 
         # Check that all the box ends are finite and are within
         # the bounds of the data

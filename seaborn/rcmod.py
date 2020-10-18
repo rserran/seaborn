@@ -7,7 +7,7 @@ from cycler import cycler
 from . import palettes
 
 
-__all__ = ["set", "reset_defaults", "reset_orig",
+__all__ = ["set_theme", "set", "reset_defaults", "reset_orig",
            "axes_style", "set_style", "plotting_context", "set_context",
            "set_palette"]
 
@@ -83,9 +83,9 @@ if LooseVersion(mpl.__version__) >= "3.0":
     _context_keys.append("legend.title_fontsize")
 
 
-def set(context="notebook", style="darkgrid", palette="deep",
-        font="sans-serif", font_scale=1, color_codes=True, rc=None):
-    """Set aesthetic parameters in one step.
+def set_theme(context="notebook", style="darkgrid", palette="deep",
+              font="sans-serif", font_scale=1, color_codes=True, rc=None):
+    """Set multiple theme parameters in one step.
 
     Each set of parameters can be set directly or temporarily, see the
     referenced functions below for more information.
@@ -93,11 +93,11 @@ def set(context="notebook", style="darkgrid", palette="deep",
     Parameters
     ----------
     context : string or dict
-        Plotting context parameters, see :func:`plotting_context`
+        Plotting context parameters, see :func:`plotting_context`.
     style : string or dict
-        Axes style parameters, see :func:`axes_style`
+        Axes style parameters, see :func:`axes_style`.
     palette : string or sequence
-        Color palette, see :func:`color_palette`
+        Color palette, see :func:`color_palette`.
     font : string
         Font family, see matplotlib font manager.
     font_scale : float, optional
@@ -115,6 +115,11 @@ def set(context="notebook", style="darkgrid", palette="deep",
     set_palette(palette, color_codes=color_codes)
     if rc is not None:
         mpl.rcParams.update(rc)
+
+
+def set(*args, **kwargs):
+    """Alias for :func:`set_theme`, which is the preferred interface."""
+    set_theme(*args, **kwargs)
 
 
 def reset_defaults():
@@ -383,7 +388,7 @@ def plotting_context(context=None, font_scale=1, rc=None):
             raise ValueError("context must be in %s" % ", ".join(contexts))
 
         # Set up dictionary of default parameters
-        base_context = {
+        texts_base_context = {
 
             "font.size": 12,
             "axes.labelsize": 12,
@@ -391,6 +396,13 @@ def plotting_context(context=None, font_scale=1, rc=None):
             "xtick.labelsize": 11,
             "ytick.labelsize": 11,
             "legend.fontsize": 11,
+
+        }
+
+        if LooseVersion(mpl.__version__) >= "3.0":
+            texts_base_context["legend.title_fontsize"] = 12
+
+        base_context = {
 
             "axes.linewidth": 1.25,
             "grid.linewidth": 1,
@@ -409,17 +421,14 @@ def plotting_context(context=None, font_scale=1, rc=None):
             "ytick.minor.size": 4,
 
         }
-
-        if LooseVersion(mpl.__version__) >= "3.0":
-            base_context["legend.title_fontsize"] = 12
+        base_context.update(texts_base_context)
 
         # Scale all the parameters by the same factor depending on the context
         scaling = dict(paper=.8, notebook=1, talk=1.5, poster=2)[context]
         context_dict = {k: v * scaling for k, v in base_context.items()}
 
         # Now independently scale the fonts
-        font_keys = ["axes.labelsize", "axes.titlesize", "legend.fontsize",
-                     "xtick.labelsize", "ytick.labelsize", "font.size"]
+        font_keys = texts_base_context.keys()
         font_dict = {k: context_dict[k] * font_scale for k in font_keys}
         context_dict.update(font_dict)
 

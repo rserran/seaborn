@@ -45,7 +45,7 @@ class _CategoricalPlotter(object):
 
             # Do a sanity check on the inputs
             if hue is not None:
-                error = "Cannot use `hue` without `x` or `y`"
+                error = "Cannot use `hue` without `x` and `y`"
                 raise ValueError(error)
 
             # No hue grouping with wide inputs
@@ -79,7 +79,7 @@ class _CategoricalPlotter(object):
 
                 # Convert to a list of arrays, the common representation
                 iter_data = plot_data.iteritems()
-                plot_data = [np.asarray(s, np.float) for k, s in iter_data]
+                plot_data = [np.asarray(s, float) for k, s in iter_data]
 
             # Option 1b:
             # The input data is an array or list
@@ -125,7 +125,7 @@ class _CategoricalPlotter(object):
                     plot_data = data
 
                 # Convert to a list of arrays, the common representation
-                plot_data = [np.asarray(d, np.float) for d in plot_data]
+                plot_data = [np.asarray(d, float) for d in plot_data]
 
                 # The group names will just be numeric indices
                 group_names = list(range((len(plot_data))))
@@ -357,12 +357,16 @@ class _CategoricalPlotter(object):
         if ylabel is not None:
             ax.set_ylabel(ylabel)
 
+        group_names = self.group_names
+        if not group_names:
+            group_names = ["" for _ in range(len(self.plot_data))]
+
         if self.orient == "v":
             ax.set_xticks(np.arange(len(self.plot_data)))
-            ax.set_xticklabels(self.group_names)
+            ax.set_xticklabels(group_names)
         else:
             ax.set_yticks(np.arange(len(self.plot_data)))
-            ax.set_yticklabels(self.group_names)
+            ax.set_yticklabels(group_names)
 
         if self.orient == "v":
             ax.xaxis.grid(False)
@@ -1054,7 +1058,7 @@ class _CategoricalScatterPlotter(_CategoricalPlotter):
         for i, group_data in enumerate(self.plot_data):
 
             # Initialize the array for this group level
-            group_colors = np.empty(group_data.size, np.int)
+            group_colors = np.empty(group_data.size, int)
             if isinstance(group_data, pd.Series):
                 group_colors = pd.Series(group_colors, group_data.index)
 
@@ -1114,10 +1118,10 @@ class _StripPlotter(_CategoricalScatterPlotter):
             if self.plot_hues is None or not self.dodge:
 
                 if self.hue_names is None:
-                    hue_mask = np.ones(group_data.size, np.bool)
+                    hue_mask = np.ones(group_data.size, bool)
                 else:
                     hue_mask = np.array([h in self.hue_names
-                                         for h in self.plot_hues[i]], np.bool)
+                                         for h in self.plot_hues[i]], bool)
                     # Broken on older numpys
                     # hue_mask = np.in1d(self.plot_hues[i], self.hue_names)
 
@@ -1284,7 +1288,7 @@ class _SwarmPlotter(_CategoricalScatterPlotter):
             points[off_high] = high_gutter
 
         gutter_prop = (off_high + off_low).sum() / len(points)
-        if gutter_prop > .02:
+        if gutter_prop > .05:
             msg = (
                 "{:.1%} of the points cannot be placed; you may want "
                 "to decrease the size of the markers or use stripplot."
@@ -1350,10 +1354,10 @@ class _SwarmPlotter(_CategoricalScatterPlotter):
                 width = self.width
 
                 if self.hue_names is None:
-                    hue_mask = np.ones(group_data.size, np.bool)
+                    hue_mask = np.ones(group_data.size, bool)
                 else:
                     hue_mask = np.array([h in self.hue_names
-                                         for h in self.plot_hues[i]], np.bool)
+                                         for h in self.plot_hues[i]], bool)
                     # Broken on older numpys
                     # hue_mask = np.in1d(self.plot_hues[i], self.hue_names)
 
@@ -2292,7 +2296,7 @@ boxplot.__doc__ = dedent("""\
         :context: close-figs
 
         >>> import seaborn as sns
-        >>> sns.set(style="whitegrid")
+        >>> sns.set_theme(style="whitegrid")
         >>> tips = sns.load_dataset("tips")
         >>> ax = sns.boxplot(x=tips["total_bill"])
 
@@ -2477,7 +2481,7 @@ violinplot.__doc__ = dedent("""\
         :context: close-figs
 
         >>> import seaborn as sns
-        >>> sns.set(style="whitegrid")
+        >>> sns.set_theme(style="whitegrid")
         >>> tips = sns.load_dataset("tips")
         >>> ax = sns.violinplot(x=tips["total_bill"])
 
@@ -2702,7 +2706,7 @@ boxenplot.__doc__ = dedent("""\
         :context: close-figs
 
         >>> import seaborn as sns
-        >>> sns.set(style="whitegrid")
+        >>> sns.set_theme(style="whitegrid")
         >>> tips = sns.load_dataset("tips")
         >>> ax = sns.boxenplot(x=tips["total_bill"])
 
@@ -2868,7 +2872,7 @@ stripplot.__doc__ = dedent("""\
         :context: close-figs
 
         >>> import seaborn as sns
-        >>> sns.set(style="whitegrid")
+        >>> sns.set_theme(style="whitegrid")
         >>> tips = sns.load_dataset("tips")
         >>> ax = sns.stripplot(x=tips["total_bill"])
 
@@ -3068,7 +3072,7 @@ swarmplot.__doc__ = dedent("""\
         :context: close-figs
 
         >>> import seaborn as sns
-        >>> sns.set(style="whitegrid")
+        >>> sns.set_theme(style="whitegrid")
         >>> tips = sns.load_dataset("tips")
         >>> ax = sns.swarmplot(x=tips["total_bill"])
 
@@ -3106,7 +3110,7 @@ swarmplot.__doc__ = dedent("""\
     .. plot::
         :context: close-figs
 
-        >>> ax = sns.swarmplot(x="time", y="tip", data=tips,
+        >>> ax = sns.swarmplot(x="time", y="total_bill", data=tips,
         ...                    order=["Dinner", "Lunch"])
 
     Plot using larger points:
@@ -3114,15 +3118,15 @@ swarmplot.__doc__ = dedent("""\
     .. plot::
         :context: close-figs
 
-        >>> ax = sns.swarmplot(x="time", y="tip", data=tips, size=6)
+        >>> ax = sns.swarmplot(x="time", y="total_bill", data=tips, size=6)
 
     Draw swarms of observations on top of a box plot:
 
     .. plot::
         :context: close-figs
 
-        >>> ax = sns.boxplot(x="tip", y="day", data=tips, whis=np.inf)
-        >>> ax = sns.swarmplot(x="tip", y="day", data=tips, color=".2")
+        >>> ax = sns.boxplot(x="total_bill", y="day", data=tips, whis=np.inf)
+        >>> ax = sns.swarmplot(x="total_bill", y="day", data=tips, color=".2")
 
     Draw swarms of observations on top of a violin plot:
 
@@ -3237,7 +3241,7 @@ barplot.__doc__ = dedent("""\
         :context: close-figs
 
         >>> import seaborn as sns
-        >>> sns.set(style="whitegrid")
+        >>> sns.set_theme(style="whitegrid")
         >>> tips = sns.load_dataset("tips")
         >>> ax = sns.barplot(x="day", y="total_bill", data=tips)
 
@@ -3436,7 +3440,7 @@ pointplot.__doc__ = dedent("""\
         :context: close-figs
 
         >>> import seaborn as sns
-        >>> sns.set(style="darkgrid")
+        >>> sns.set_theme(style="darkgrid")
         >>> tips = sns.load_dataset("tips")
         >>> ax = sns.pointplot(x="time", y="total_bill", data=tips)
 
@@ -3638,7 +3642,7 @@ countplot.__doc__ = dedent("""\
         :context: close-figs
 
         >>> import seaborn as sns
-        >>> sns.set(style="darkgrid")
+        >>> sns.set_theme(style="darkgrid")
         >>> titanic = sns.load_dataset("titanic")
         >>> ax = sns.countplot(x="class", data=titanic)
 
@@ -3764,7 +3768,6 @@ def catplot(
         "box": _BoxPlotter,
         "violin": _ViolinPlotter,
         "boxen": _LVPlotter,
-        "lv": _LVPlotter,
         "bar": _BarPlotter,
         "point": _PointPlotter,
         "strip": _StripPlotter,
@@ -3774,7 +3777,23 @@ def catplot(
     p = _CategoricalPlotter()
     p.require_numeric = plotter_class.require_numeric
     p.establish_variables(x_, y_, hue, data, orient, order, hue_order)
-    order = p.group_names
+    if (
+        order is not None
+        or (sharex and p.orient == "v")
+        or (sharey and p.orient == "h")
+    ):
+        # Sync categorical axis between facets to have the same categories
+        order = p.group_names
+    elif color is None and hue is None:
+        msg = (
+            "Setting `{}=False` with `color=None` may cause different levels of the "
+            "`{}` variable to share colors. This will change in a future version."
+        )
+        if not sharex and p.orient == "v":
+            warnings.warn(msg.format("sharex", "x"), UserWarning)
+        if not sharey and p.orient == "h":
+            warnings.warn(msg.format("sharey", "y"), UserWarning)
+
     hue_order = p.hue_names
 
     # Determine the palette to use
@@ -3867,7 +3886,7 @@ catplot.__doc__ = dedent("""\
     to ``x``, ``y``, ``hue``, etc.
 
     As in the case with the underlying plot functions, if variables have a
-    ``categorical`` data type, the the levels of the categorical variables, and
+    ``categorical`` data type, the levels of the categorical variables, and
     their order will be inferred from the objects. Otherwise you may have to
     use alter the dataframe sorting or use the function parameters (``orient``,
     ``order``, ``hue_order``, etc.) to set up the plot correctly.
@@ -3889,10 +3908,10 @@ catplot.__doc__ = dedent("""\
     row_order, col_order : lists of strings, optional
         Order to organize the rows and/or columns of the grid in, otherwise the
         orders are inferred from the data objects.
-    kind : string, optional
-        The kind of plot to draw (corresponds to the name of a categorical
-        plotting function. Options are: "point", "bar", "strip", "swarm",
-        "box", "violin", or "boxen".
+    kind : str, optional
+        The kind of plot to draw, corresponds to the name of a categorical
+        axes-level plotting function. Options are: "strip", "swarm", "box", "violin",
+        "boxen", "point", "bar", or "count".
     {height}
     {aspect}
     {orient}
@@ -3924,7 +3943,7 @@ catplot.__doc__ = dedent("""\
         :context: close-figs
 
         >>> import seaborn as sns
-        >>> sns.set(style="ticks")
+        >>> sns.set_theme(style="ticks")
         >>> exercise = sns.load_dataset("exercise")
         >>> g = sns.catplot(x="time", y="pulse", hue="kind", data=exercise)
 
