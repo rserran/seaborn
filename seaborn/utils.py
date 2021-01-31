@@ -5,28 +5,18 @@ import inspect
 import warnings
 import colorsys
 from urllib.request import urlopen, urlretrieve
+from distutils.version import LooseVersion
 
 import numpy as np
-from scipy import stats
 import pandas as pd
 import matplotlib as mpl
-import matplotlib.colors as mplcol
+from matplotlib.colors import to_rgb
 import matplotlib.pyplot as plt
 from matplotlib.cbook import normalize_kwargs
 
 
 __all__ = ["desaturate", "saturate", "set_hls_values",
            "despine", "get_dataset_names", "get_data_home", "load_dataset"]
-
-
-def sort_df(df, *args, **kwargs):
-    """Wrapper to handle different pandas sorting API pre/post 0.17."""
-    msg = "This function is deprecated and will be removed in a future version"
-    warnings.warn(msg)
-    try:
-        return df.sort_values(*args, **kwargs)
-    except AttributeError:
-        return df.sort(*args, **kwargs)
 
 
 def ci_to_errsize(cis, heights):
@@ -59,34 +49,117 @@ def ci_to_errsize(cis, heights):
     return errsize
 
 
-def pmf_hist(a, bins=10):
-    """Return arguments to plt.bar for pmf-like histogram of an array.
+def _normal_quantile_func(q):
+    """
+    Compute the quantile function of the standard normal distribution.
 
-    DEPRECATED: will be removed in a future version.
-
-    Parameters
-    ----------
-    a: array-like
-        array to make histogram of
-    bins: int
-        number of bins
-
-    Returns
-    -------
-    x: array
-        left x position of bars
-    h: array
-        height of bars
-    w: float
-        width of bars
+    This wrapper exists because we are dropping scipy as a mandatory dependency
+    but statistics.NormalDist was added to the standard library in 3.8.
 
     """
-    msg = "This function is deprecated and will be removed in a future version"
-    warnings.warn(msg, FutureWarning)
-    n, x = np.histogram(a, bins)
-    h = n / n.sum()
-    w = x[1] - x[0]
-    return x[:-1], h, w
+    try:
+        from statistics import NormalDist
+        qf = np.vectorize(NormalDist().inv_cdf)
+    except ImportError:
+        try:
+            from scipy.stats import norm
+            qf = norm.ppf
+        except ImportError:
+            msg = (
+                "Standard normal quantile functions require either Python>=3.8 or scipy"
+            )
+            raise RuntimeError(msg)
+    return qf(q)
+
+
+def _draw_figure(fig):
+    """Force draw of a matplotlib figure, accounting for back-compat."""
+    # See https://github.com/matplotlib/matplotlib/issues/19197 for context
+    fig.canvas.draw()
+    if fig.stale:
+        try:
+            fig.draw(fig.canvas.get_renderer())
+        except AttributeError:
+            pass
+
+
+def _default_color(method, hue, color, kws):
+    """If needed, get a default color by using the matplotlib property cycle."""
+    if hue is not None:
+        # This warning is probably user-friendly, but it's currently triggered
+        # in a FacetGrid context and I don't want to mess with that logic right now
+        #  if color is not None:
+        #      msg = "`color` is ignored when `hue` is assigned."
+        #      warnings.warn(msg)
+        return None
+
+    if color is not None:
+        return color
+
+    elif method.__name__ == "plot":
+
+        scout, = method([], [], **kws)
+        color = scout.get_color()
+        scout.remove()
+
+    elif method.__name__ == "scatter":
+
+        # Matplotlib will raise if the size of x/y don't match s/c,
+        # and the latter might be in the kws dict
+        scout_size = max(
+            np.atleast_1d(kws.get(key, [])).shape[0]
+            for key in ["s", "c", "fc", "facecolor", "facecolors"]
+        )
+        scout_x = scout_y = np.full(scout_size, np.nan)
+
+        scout = method(scout_x, scout_y, **kws)
+        facecolors = scout.get_facecolors()
+
+        if not len(facecolors):
+            # Handle bug in matplotlib <= 3.2 (I think)
+            # This will limit the ability to use non color= kwargs to specify
+            # a color in versions of matplotlib with the bug, but trying to
+            # work out what the user wanted by re-implementing the broken logic
+            # of inspecting the kwargs is probably too brittle.
+            single_color = False
+        else:
+            single_color = np.unique(facecolors, axis=0).shape[0] == 1
+
+        # Allow the user to specify an array of colors through various kwargs
+        if "c" not in kws and single_color:
+            color = to_rgb(facecolors[0])
+
+        scout.remove()
+
+    elif method.__name__ == "bar":
+
+        # bar() needs masked, not empty data, to generate a patch
+        scout, = method([np.nan], [np.nan], **kws)
+        color = to_rgb(scout.get_facecolor())
+        scout.remove()
+
+    elif method.__name__ == "fill_between":
+
+        # There is a bug on matplotlib < 3.3 where fill_between with
+        # datetime units and empty data will set incorrect autoscale limits
+        # To workaround it, we'll always return the first color in the cycle.
+        # https://github.com/matplotlib/matplotlib/issues/17586
+        ax = method.__self__
+        datetime_axis = any([
+            isinstance(ax.xaxis.converter, mpl.dates.DateConverter),
+            isinstance(ax.yaxis.converter, mpl.dates.DateConverter),
+        ])
+        if LooseVersion(mpl.__version__) < "3.3" and datetime_axis:
+            return "C0"
+
+        kws = _normalize_kwargs(kws, mpl.collections.PolyCollection)
+
+        scout = method([], [], **kws)
+        facecolor = scout.get_facecolor()
+        color = to_rgb(facecolor[0])
+        scout.remove()
+
+    return color
 
 
 def desaturate(color, prop):
@@ -110,7 +183,7 @@ def desaturate(color, prop):
         raise ValueError("prop must be between 0 and 1")
 
     # Get rgb tuple rep
-    rgb = mplcol.colorConverter.to_rgb(color)
+    rgb = to_rgb(color)
 
     # Convert to hls
     h, l, s = colorsys.rgb_to_hls(*rgb)
@@ -158,7 +231,7 @@ def set_hls_values(color, h=None, l=None, s=None):  # noqa
 
     """
     # Get an RGB tuple representation
-    rgb = mplcol.colorConverter.to_rgb(color)
+    rgb = to_rgb(color)
     vals = list(colorsys.rgb_to_hls(*rgb))
     for i, val in enumerate([h, l, s]):
         if val is not None:
@@ -326,87 +399,10 @@ def _kde_support(data, bw, gridsize, cut, clip):
     return support
 
 
-def percentiles(a, pcts, axis=None):
-    """Like scoreatpercentile but can take and return array of percentiles.
-
-    DEPRECATED: will be removed in a future version.
-
-    Parameters
-    ----------
-    a : array
-        data
-    pcts : sequence of percentile values
-        percentile or percentiles to find score at
-    axis : int or None
-        if not None, computes scores over this axis
-
-    Returns
-    -------
-    scores: array
-        array of scores at requested percentiles
-        first dimension is length of object passed to ``pcts``
-
-    """
-    msg = "This function is deprecated and will be removed in a future version"
-    warnings.warn(msg, FutureWarning)
-
-    scores = []
-    try:
-        n = len(pcts)
-    except TypeError:
-        pcts = [pcts]
-        n = 0
-    for i, p in enumerate(pcts):
-        if axis is None:
-            score = stats.scoreatpercentile(a.ravel(), p)
-        else:
-            score = np.apply_along_axis(stats.scoreatpercentile, axis, a, p)
-        scores.append(score)
-    scores = np.asarray(scores)
-    if not n:
-        scores = scores.squeeze()
-    return scores
-
-
 def ci(a, which=95, axis=None):
     """Return a percentile range from an array of values."""
     p = 50 - which / 2, 50 + which / 2
-    return np.percentile(a, p, axis)
-
-
-def sig_stars(p):
-    """Return a R-style significance string corresponding to p values.
-
-    DEPRECATED: will be removed in a future version.
-
-    """
-    msg = "This function is deprecated and will be removed in a future version"
-    warnings.warn(msg, FutureWarning)
-
-    if p < 0.001:
-        return "***"
-    elif p < 0.01:
-        return "**"
-    elif p < 0.05:
-        return "*"
-    elif p < 0.1:
-        return "."
-    return ""
-
-
-def iqr(a):
-    """Calculate the IQR for an array of numbers.
-
-    DEPRECATED: will be removed in a future version.
-
-    """
-    msg = "This function is deprecated and will be removed in a future version"
-    warnings.warn(msg, FutureWarning)
-
-    a = np.asarray(a)
-    q1 = stats.scoreatpercentile(a, 25)
-    q3 = stats.scoreatpercentile(a, 75)
-    return q3 - q1
+    return np.nanpercentile(a, p, axis)
 
 
 def get_dataset_names():
@@ -672,7 +668,7 @@ def _check_argument(param, options, value):
     """Raise if value for param is not in options."""
     if value not in options:
         raise ValueError(
-            f"`{param}` must be one of {options}, but {value} was passed.`"
+            f"`{param}` must be one of {options}, but {repr(value)} was passed."
         )
 
 
@@ -708,3 +704,28 @@ def adjust_legend_subtitles(legend):
             for text in text_area.get_children():
                 if font_size is not None:
                     text.set_size(font_size)
+
+
+def _deprecate_ci(errorbar, ci):
+    """
+    Warn on usage of ci= and convert to appropriate errorbar= arg.
+
+    ci was deprecated when errorbar was added in 0.12. It should not be removed
+    completely for some time, but it can be moved out of function definitions
+    (and extracted from kwargs) after one cycle.
+
+    """
+    if ci != "deprecated":
+        if ci is None:
+            errorbar = None
+        elif ci == "sd":
+            errorbar = "sd"
+        else:
+            errorbar = ("ci", ci)
+        msg = (
+            "The `ci` parameter is deprecated; "
+            f"use `errorbar={repr(errorbar)}` for same effect."
+        )
+        warnings.warn(msg, UserWarning)
+
+    return errorbar

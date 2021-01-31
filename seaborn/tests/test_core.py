@@ -1,3 +1,4 @@
+import itertools
 import numpy as np
 import pandas as pd
 import matplotlib as mpl
@@ -22,6 +23,30 @@ from .._core import (
 )
 
 from ..palettes import color_palette
+
+
+try:
+    from pandas import NA as PD_NA
+except ImportError:
+    PD_NA = None
+
+
+@pytest.fixture(params=[
+    dict(x="x", y="y"),
+    dict(x="t", y="y"),
+    dict(x="a", y="y"),
+    dict(x="x", y="y", hue="y"),
+    dict(x="x", y="y", hue="a"),
+    dict(x="x", y="y", size="a"),
+    dict(x="x", y="y", style="a"),
+    dict(x="x", y="y", hue="s"),
+    dict(x="x", y="y", size="s"),
+    dict(x="x", y="y", style="s"),
+    dict(x="x", y="y", hue="a", style="a"),
+    dict(x="x", y="y", hue="a", size="b", style="b"),
+])
+def long_variables(request):
+    return request.param
 
 
 class TestSemanticMapping:
@@ -93,7 +118,7 @@ class TestHueMapping:
 
         p = VectorPlotter(data=wide_df)
         m = HueMapping(p)
-        assert m.levels == wide_df.columns.tolist()
+        assert m.levels == wide_df.columns.to_list()
         assert m.map_type == "categorical"
         assert m.cmap is None
 
@@ -190,7 +215,7 @@ class TestHueMapping:
         # Test excplicit categories
         p = VectorPlotter(data=long_df, variables=dict(x="x", hue="a_cat"))
         m = HueMapping(p)
-        assert m.levels == long_df["a_cat"].cat.categories.tolist()
+        assert m.levels == long_df["a_cat"].cat.categories.to_list()
         assert m.map_type == "categorical"
 
         # Test numeric data with category type
@@ -429,7 +454,7 @@ class TestSizeMapping:
         # Test explicit categories
         p = VectorPlotter(data=long_df, variables=dict(x="x", size="a_cat"))
         m = SizeMapping(p)
-        assert m.levels == long_df["a_cat"].cat.categories.tolist()
+        assert m.levels == long_df["a_cat"].cat.categories.to_list()
         assert m.map_type == "categorical"
 
         # Test sizes list with wrong length
@@ -538,7 +563,7 @@ class TestStyleMapping:
         # Test excplicit categories
         p = VectorPlotter(data=long_df, variables=dict(x="x", style="a_cat"))
         m = StyleMapping(p)
-        assert m.levels == long_df["a_cat"].cat.categories.tolist()
+        assert m.levels == long_df["a_cat"].cat.categories.to_list()
 
         # Test style order with defaults
         order = p.plot_data["style"].unique()[[1, 2, 0]]
@@ -602,8 +627,149 @@ class TestVectorPlotter:
         assert p.variables["x"] == expected_x_name
         assert p.variables["y"] == expected_y_name
 
-    # TODO note that most of the other tests that exercise the core
-    # variable assignment code still live in test_relational
+    def test_long_df(self, long_df, long_variables):
+
+        p = VectorPlotter()
+        p.assign_variables(data=long_df, variables=long_variables)
+        assert p.input_format == "long"
+        assert p.variables == long_variables
+
+        for key, val in long_variables.items():
+            assert_array_equal(p.plot_data[key], long_df[val])
+
+    def test_long_df_with_index(self, long_df, long_variables):
+
+        p = VectorPlotter()
+        p.assign_variables(
+            data=long_df.set_index("a"),
+            variables=long_variables,
+        )
+        assert p.input_format == "long"
+        assert p.variables == long_variables
+
+        for key, val in long_variables.items():
+            assert_array_equal(p.plot_data[key], long_df[val])
+
+    def test_long_df_with_multiindex(self, long_df, long_variables):
+
+        p = VectorPlotter()
+        p.assign_variables(
+            data=long_df.set_index(["a", "x"]),
+            variables=long_variables,
+        )
+        assert p.input_format == "long"
+        assert p.variables == long_variables
+
+        for key, val in long_variables.items():
+            assert_array_equal(p.plot_data[key], long_df[val])
+
+    def test_long_dict(self, long_dict, long_variables):
+
+        p = VectorPlotter()
+        p.assign_variables(
+            data=long_dict,
+            variables=long_variables,
+        )
+        assert p.input_format == "long"
+        assert p.variables == long_variables
+
+        for key, val in long_variables.items():
+            assert_array_equal(p.plot_data[key], pd.Series(long_dict[val]))
+
+    @pytest.mark.parametrize(
+        "vector_type",
+        ["series", "numpy", "list"],
+    )
+    def test_long_vectors(self, long_df, long_variables, vector_type):
+
+        variables = {key: long_df[val] for key, val in long_variables.items()}
+        if vector_type == "numpy":
+            variables = {key: val.to_numpy() for key, val in variables.items()}
+        elif vector_type == "list":
+            variables = {key: val.to_list() for key, val in variables.items()}
+
+        p = VectorPlotter()
+        p.assign_variables(variables=variables)
+        assert p.input_format == "long"
+
+        assert list(p.variables) == list(long_variables)
+        if vector_type == "series":
+            assert p.variables == long_variables
+
+        for key, val in long_variables.items():
+            assert_array_equal(p.plot_data[key], long_df[val])
+
+    def test_long_undefined_variables(self, long_df):
+
+        p = VectorPlotter()
+
+        with pytest.raises(ValueError):
+            p.assign_variables(
+                data=long_df, variables=dict(x="not_in_df"),
+            )
+
+        with pytest.raises(ValueError):
+            p.assign_variables(
+                data=long_df, variables=dict(x="x", y="not_in_df"),
+            )
+
+        with pytest.raises(ValueError):
+            p.assign_variables(
+                data=long_df, variables=dict(x="x", y="y", hue="not_in_df"),
+            )
+
+    @pytest.mark.parametrize(
+        "arg", [[], np.array([]), pd.DataFrame()],
+    )
+    def test_empty_data_input(self, arg):
+
+        p = VectorPlotter()
+        p.assign_variables(data=arg)
+        assert not p.variables
+
+        if not isinstance(arg, pd.DataFrame):
+            p = VectorPlotter()
+            p.assign_variables(variables=dict(x=arg, y=arg))
+            assert not p.variables
+
+    def test_units(self, repeated_df):
+
+        p = VectorPlotter()
+        p.assign_variables(
+            data=repeated_df,
+            variables=dict(x="x", y="y", units="u"),
+        )
+        assert_array_equal(p.plot_data["units"], repeated_df["u"])
+
+    @pytest.mark.parametrize("name", [3, 4.5])
+    def test_long_numeric_name(self, long_df, name):
+
+        long_df[name] = long_df["x"]
+        p = VectorPlotter()
+        p.assign_variables(data=long_df, variables={"x": name})
+        assert_array_equal(p.plot_data["x"], long_df[name])
+        assert p.variables["x"] == name
+
+    def test_long_hierarchical_index(self, rng):
+
+        cols = pd.MultiIndex.from_product([["a"], ["x", "y"]])
+        data = rng.uniform(size=(50, 2))
+        df = pd.DataFrame(data, columns=cols)
+
+        name = ("a", "y")
+        var = "y"
+
+        p = VectorPlotter()
+        p.assign_variables(data=df, variables={var: name})
+        assert_array_equal(p.plot_data[var], df[name])
+        assert p.variables[var] == name
+
+    def test_long_scalar_and_data(self, long_df):
+
+        val = 22
+        p = VectorPlotter(data=long_df, variables={"x": "x", "y": val})
+        assert (p.plot_data["y"] == val).all()
+        assert p.variables["y"] is None
 
     def test_wide_semantic_error(self, wide_df):
 
@@ -810,6 +976,20 @@ class TestVectorPlotter:
         for i, (sub_vars, _) in enumerate(iterator):
             assert sub_vars["hue"] == reversed_order[i]
 
+    def test_iter_data_dropna(self, missing_df):
+
+        p = VectorPlotter(
+            data=missing_df,
+            variables=dict(x="x", y="y", hue="a")
+        )
+        for _, sub_df in p.iter_data("hue"):
+            assert not sub_df.isna().any().any()
+
+        some_missing = False
+        for _, sub_df in p.iter_data("hue", dropna=False):
+            some_missing |= sub_df.isna().any().any()
+        assert some_missing
+
     def test_axis_labels(self, long_df):
 
         f, ax = plt.subplots()
@@ -972,6 +1152,67 @@ class TestVectorPlotter:
         assert p.ax is None
         assert p.facets == g
 
+    def test_attach_shared_axes(self, long_df):
+
+        g = FacetGrid(long_df)
+        p = VectorPlotter(data=long_df, variables={"x": "x", "y": "y"})
+        p._attach(g)
+        assert p.converters["x"].nunique() == 1
+
+        g = FacetGrid(long_df, col="a")
+        p = VectorPlotter(data=long_df, variables={"x": "x", "y": "y", "col": "a"})
+        p._attach(g)
+        assert p.converters["x"].nunique() == 1
+        assert p.converters["y"].nunique() == 1
+
+        g = FacetGrid(long_df, col="a", sharex=False)
+        p = VectorPlotter(data=long_df, variables={"x": "x", "y": "y", "col": "a"})
+        p._attach(g)
+        assert p.converters["x"].nunique() == p.plot_data["col"].nunique()
+        assert p.converters["x"].groupby(p.plot_data["col"]).nunique().max() == 1
+        assert p.converters["y"].nunique() == 1
+
+        g = FacetGrid(long_df, col="a", sharex=False, col_wrap=2)
+        p = VectorPlotter(data=long_df, variables={"x": "x", "y": "y", "col": "a"})
+        p._attach(g)
+        assert p.converters["x"].nunique() == p.plot_data["col"].nunique()
+        assert p.converters["x"].groupby(p.plot_data["col"]).nunique().max() == 1
+        assert p.converters["y"].nunique() == 1
+
+        g = FacetGrid(long_df, col="a", row="b")
+        p = VectorPlotter(
+            data=long_df, variables={"x": "x", "y": "y", "col": "a", "row": "b"},
+        )
+        p._attach(g)
+        assert p.converters["x"].nunique() == 1
+        assert p.converters["y"].nunique() == 1
+
+        g = FacetGrid(long_df, col="a", row="b", sharex=False)
+        p = VectorPlotter(
+            data=long_df, variables={"x": "x", "y": "y", "col": "a", "row": "b"},
+        )
+        p._attach(g)
+        assert p.converters["x"].nunique() == len(g.axes.flat)
+        assert p.converters["y"].nunique() == 1
+
+        g = FacetGrid(long_df, col="a", row="b", sharex="col")
+        p = VectorPlotter(
+            data=long_df, variables={"x": "x", "y": "y", "col": "a", "row": "b"},
+        )
+        p._attach(g)
+        assert p.converters["x"].nunique() == p.plot_data["col"].nunique()
+        assert p.converters["x"].groupby(p.plot_data["col"]).nunique().max() == 1
+        assert p.converters["y"].nunique() == 1
+
+        g = FacetGrid(long_df, col="a", row="b", sharey="row")
+        p = VectorPlotter(
+            data=long_df, variables={"x": "x", "y": "y", "col": "a", "row": "b"},
+        )
+        p._attach(g)
+        assert p.converters["x"].nunique() == 1
+        assert p.converters["y"].nunique() == p.plot_data["row"].nunique()
+        assert p.converters["y"].groupby(p.plot_data["row"]).nunique().max() == 1
+
     def test_get_axes_single(self, long_df):
 
         ax = plt.figure().subplots()
@@ -1043,6 +1284,50 @@ class TestVectorPlotter:
             [2, 0, 1, 2],
         )
 
+    @pytest.fixture(
+        params=itertools.product(
+            [None, np.nan, PD_NA],
+            ["numeric", "category", "datetime"]
+        )
+    )
+    @pytest.mark.parametrize(
+        "NA,var_type",
+    )
+    def comp_data_missing_fixture(self, request):
+
+        # This fixture holds the logic for parameterizing
+        # the following test (test_comp_data_missing)
+
+        NA, var_type = request.param
+
+        if NA is None:
+            pytest.skip("No pandas.NA available")
+
+        comp_data = [0, 1, np.nan, 2, np.nan, 1]
+        if var_type == "numeric":
+            orig_data = [0, 1, NA, 2, np.inf, 1]
+        elif var_type == "category":
+            orig_data = ["a", "b", NA, "c", NA, "b"]
+        elif var_type == "datetime":
+            # Use 1-based numbers to avoid issue on matplotlib<3.2
+            # Could simplify the test a bit when we roll off that version
+            comp_data = [1, 2, np.nan, 3, np.nan, 2]
+            numbers = [1, 2, 3, 2]
+
+            orig_data = mpl.dates.num2date(numbers)
+            orig_data.insert(2, NA)
+            orig_data.insert(4, np.inf)
+
+        return orig_data, comp_data
+
+    def test_comp_data_missing(self, comp_data_missing_fixture):
+
+        orig_data, comp_data = comp_data_missing_fixture
+        p = VectorPlotter(variables={"x": orig_data})
+        ax = plt.figure().subplots()
+        p._attach(ax)
+        assert_array_equal(p.comp_data["x"], comp_data)
+
     def test_var_order(self, long_df):
 
         order = ["c", "b", "a"]
@@ -1053,6 +1338,61 @@ class TestVectorPlotter:
             mapper(order=order)
 
             assert p.var_levels[var] == order
+
+    def test_scale_native(self, long_df):
+
+        p = VectorPlotter(data=long_df, variables={"x": "x"})
+        with pytest.raises(NotImplementedError):
+            p.scale_native("x")
+
+    def test_scale_numeric(self, long_df):
+
+        p = VectorPlotter(data=long_df, variables={"y": "y"})
+        with pytest.raises(NotImplementedError):
+            p.scale_numeric("y")
+
+    def test_scale_datetime(self, long_df):
+
+        p = VectorPlotter(data=long_df, variables={"x": "t"})
+        with pytest.raises(NotImplementedError):
+            p.scale_datetime("x")
+
+    def test_scale_categorical(self, long_df):
+
+        p = VectorPlotter(data=long_df, variables={"x": "x"})
+        p.scale_categorical("y")
+        assert p.variables["y"] is None
+        assert p.var_types["y"] == "categorical"
+        assert (p.plot_data["y"] == "").all()
+
+        p = VectorPlotter(data=long_df, variables={"x": "s"})
+        p.scale_categorical("x")
+        assert p.var_types["x"] == "categorical"
+        assert hasattr(p.plot_data["x"], "str")
+        assert not p._var_ordered["x"]
+        assert p.plot_data["x"].is_monotonic_increasing
+        assert_array_equal(p.var_levels["x"], p.plot_data["x"].unique())
+
+        p = VectorPlotter(data=long_df, variables={"x": "a"})
+        p.scale_categorical("x")
+        assert not p._var_ordered["x"]
+        assert_array_equal(p.var_levels["x"], categorical_order(long_df["a"]))
+
+        p = VectorPlotter(data=long_df, variables={"x": "a_cat"})
+        p.scale_categorical("x")
+        assert p._var_ordered["x"]
+        assert_array_equal(p.var_levels["x"], categorical_order(long_df["a_cat"]))
+
+        p = VectorPlotter(data=long_df, variables={"x": "a"})
+        order = np.roll(long_df["a"].unique(), 1)
+        p.scale_categorical("x", order=order)
+        assert p._var_ordered["x"]
+        assert_array_equal(p.var_levels["x"], order)
+
+        p = VectorPlotter(data=long_df, variables={"x": "s"})
+        p.scale_categorical("x", formatter=lambda x: f"{x:%}")
+        assert p.plot_data["x"].str.endswith("%").all()
+        assert all(s.endswith("%") for s in p.var_levels["x"])
 
 
 class TestCoreFunc:
@@ -1085,10 +1425,8 @@ class TestCoreFunc:
         assert variable_type(s) == "numeric"
         assert variable_type(s.astype(int)) == "numeric"
         assert variable_type(s.astype(object)) == "numeric"
-        # assert variable_type(s.to_numpy()) == "numeric"
-        assert variable_type(s.values) == "numeric"
-        # assert variable_type(s.to_list()) == "numeric"
-        assert variable_type(s.tolist()) == "numeric"
+        assert variable_type(s.to_numpy()) == "numeric"
+        assert variable_type(s.to_list()) == "numeric"
 
         s = pd.Series([1, 2, 3, np.nan], dtype=object)
         assert variable_type(s) == "numeric"
@@ -1099,30 +1437,33 @@ class TestCoreFunc:
 
         s = pd.Series(["1", "2", "3"])
         assert variable_type(s) == "categorical"
-        # assert variable_type(s.to_numpy()) == "categorical"
-        assert variable_type(s.values) == "categorical"
-        # assert variable_type(s.to_list()) == "categorical"
-        assert variable_type(s.tolist()) == "categorical"
+        assert variable_type(s.to_numpy()) == "categorical"
+        assert variable_type(s.to_list()) == "categorical"
 
         s = pd.Series([True, False, False])
         assert variable_type(s) == "numeric"
         assert variable_type(s, boolean_type="categorical") == "categorical"
+        s_cat = s.astype("category")
+        assert variable_type(s_cat, boolean_type="categorical") == "categorical"
+        assert variable_type(s_cat, boolean_type="numeric") == "categorical"
 
         s = pd.Series([pd.Timestamp(1), pd.Timestamp(2)])
         assert variable_type(s) == "datetime"
         assert variable_type(s.astype(object)) == "datetime"
-        # assert variable_type(s.to_numpy()) == "datetime"
-        assert variable_type(s.values) == "datetime"
-        # assert variable_type(s.to_list()) == "datetime"
-        assert variable_type(s.tolist()) == "datetime"
+        assert variable_type(s.to_numpy()) == "datetime"
+        assert variable_type(s.to_list()) == "datetime"
 
     def test_infer_orient(self):
 
         nums = pd.Series(np.arange(6))
         cats = pd.Series(["a", "b"] * 3)
+        dates = pd.date_range("1999-09-22", "2006-05-14", 6)
 
         assert infer_orient(cats, nums) == "v"
         assert infer_orient(nums, cats) == "h"
+
+        assert infer_orient(cats, dates, require_numeric=False) == "v"
+        assert infer_orient(dates, cats, require_numeric=False) == "h"
 
         assert infer_orient(nums, None) == "h"
         with pytest.warns(UserWarning, match="Vertical .+ `x`"):
@@ -1153,6 +1494,9 @@ class TestCoreFunc:
             infer_orient(cats, cats, "h")
         with pytest.raises(TypeError, match="Neither"):
             infer_orient(cats, cats)
+
+        with pytest.raises(ValueError, match="`orient` must start with"):
+            infer_orient(cats, nums, orient="bad value")
 
     def test_categorical_order(self):
 

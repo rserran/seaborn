@@ -2,7 +2,6 @@ from itertools import product
 from inspect import signature
 import warnings
 from textwrap import dedent
-from distutils.version import LooseVersion
 
 import numpy as np
 import pandas as pd
@@ -11,7 +10,7 @@ import matplotlib.pyplot as plt
 
 from ._core import VectorPlotter, variable_type, categorical_order
 from . import utils
-from .utils import _check_argument, adjust_legend_subtitles
+from .utils import _check_argument, adjust_legend_subtitles, _draw_figure
 from .palettes import color_palette, blend_palette
 from ._decorators import _deprecate_positional_args
 from ._docstrings import (
@@ -103,13 +102,7 @@ class Grid:
         blank_handle = mpl.patches.Patch(alpha=0, linewidth=0)
         handles = [legend_data.get(l, blank_handle) for l in label_order]
         title = self._hue_var if title is None else title
-        if LooseVersion(mpl.__version__) < LooseVersion("3.0"):
-            try:
-                title_size = mpl.rcParams["axes.labelsize"] * .85
-            except TypeError:  # labelsize is something like "large"
-                title_size = mpl.rcParams["axes.labelsize"]
-        else:
-            title_size = mpl.rcParams["legend.title_fontsize"]
+        title_size = mpl.rcParams["legend.title_fontsize"]
 
         # Unpack nested labels from a hierarchical legend
         labels = []
@@ -138,8 +131,7 @@ class Grid:
                 adjust_legend_subtitles(figlegend)
 
             # Draw the plot to set the bounding boxes correctly
-            if hasattr(self.fig.canvas, "get_renderer"):
-                self.fig.draw(self.fig.canvas.get_renderer())
+            _draw_figure(self.fig)
 
             # Calculate and set the new width of the figure so the legend fits
             legend_width = figlegend.get_window_extent().width / self.fig.dpi
@@ -147,8 +139,7 @@ class Grid:
             self.fig.set_size_inches(fig_width + legend_width, fig_height)
 
             # Draw the plot again to get the new transformations
-            if hasattr(self.fig.canvas, "get_renderer"):
-                self.fig.draw(self.fig.canvas.get_renderer())
+            _draw_figure(self.fig)
 
             # Now calculate how much space we need on the right side
             legend_width = figlegend.get_window_extent().width / self.fig.dpi
@@ -166,12 +157,12 @@ class Grid:
             ax = self.axes.flat[0]
             kwargs.setdefault("loc", "best")
 
-            if adjust_subtitles:
-                adjust_legend_subtitles(figlegend)
-
             leg = ax.legend(handles, labels, **kwargs)
             leg.set_title(title, prop={"size": title_size})
             self._legend = leg
+
+            if adjust_subtitles:
+                adjust_legend_subtitles(leg)
 
         return self
 
@@ -452,6 +443,8 @@ class FacetGrid(Grid):
         self._legend_data = {}
         self._x_var = None
         self._y_var = None
+        self._sharex = sharex
+        self._sharey = sharey
         self._dropna = dropna
         self._not_na = not_na
 
@@ -461,13 +454,13 @@ class FacetGrid(Grid):
         if despine:
             self.despine()
 
-        if sharex:
+        if sharex in [True, 'col']:
             for ax in self._not_bottom_axes:
                 for label in ax.get_xticklabels():
                     label.set_visible(False)
                 ax.xaxis.offsetText.set_visible(False)
 
-        if sharey:
+        if sharey in [True, 'row']:
             for ax in self._not_left_axes:
                 for label in ax.get_yticklabels():
                     label.set_visible(False)
@@ -631,10 +624,8 @@ class FacetGrid(Grid):
         # If color was a keyword argument, grab it here
         kw_color = kwargs.pop("color", None)
 
-        if hasattr(func, "__module__"):
-            func_module = str(func.__module__)
-        else:
-            func_module = ""
+        # How we use the function depends on where it comes from
+        func_module = str(getattr(func, "__module__", ""))
 
         # Check for categorical plots without order information
         if func_module == "seaborn.categorical":
@@ -657,7 +648,8 @@ class FacetGrid(Grid):
                 continue
 
             # Get the current axis
-            ax = self.facet_axis(row_i, col_j)
+            modify_state = not func_module.startswith("seaborn")
+            ax = self.facet_axis(row_i, col_j, modify_state)
 
             # Decide what color to plot with
             kwargs["color"] = self._facet_color(hue_k, kw_color)
@@ -728,7 +720,8 @@ class FacetGrid(Grid):
                 continue
 
             # Get the current axis
-            ax = self.facet_axis(row_i, col_j)
+            modify_state = not str(func.__module__).startswith("seaborn")
+            ax = self.facet_axis(row_i, col_j, modify_state)
 
             # Decide what color to plot with
             kwargs["color"] = self._facet_color(hue_k, kw_color)
@@ -771,6 +764,7 @@ class FacetGrid(Grid):
             for key, val in zip(semantics, plot_args):
                 plot_kwargs[key] = val
             plot_args = []
+            plot_kwargs["ax"] = ax
         func(*plot_args, **plot_kwargs)
 
         # Sort out the supporting information
@@ -783,7 +777,7 @@ class FacetGrid(Grid):
         self.set_titles()
         self.tight_layout()
 
-    def facet_axis(self, row_i, col_j):
+    def facet_axis(self, row_i, col_j, modify_state=True):
         """Make the axis identified by these indices active and return it."""
 
         # Calculate the actual indices of the axes to plot on
@@ -793,7 +787,8 @@ class FacetGrid(Grid):
             ax = self.axes[row_i, col_j]
 
         # Get a reference to the axes object we want, and make it active
-        plt.sca(ax)
+        if modify_state:
+            plt.sca(ax)
         return ax
 
     def despine(self, **kwargs):
@@ -1166,9 +1161,14 @@ class PairGrid(Grid):
         if np.isscalar(y_vars):
             y_vars = [y_vars]
 
-        self.x_vars = list(x_vars)
-        self.y_vars = list(y_vars)
+        self.x_vars = x_vars = list(x_vars)
+        self.y_vars = y_vars = list(y_vars)
         self.square_grid = self.x_vars == self.y_vars
+
+        if not x_vars:
+            raise ValueError("No variables found for grid columns.")
+        if not y_vars:
+            raise ValueError("No variables found for grid rows.")
 
         # Create the figure and the array of subplots
         figsize = len(x_vars) * height * aspect, len(y_vars) * height
@@ -1207,11 +1207,19 @@ class PairGrid(Grid):
         # Sort out the hue variable
         self._hue_var = hue
         if hue is None:
-            self.hue_names = ["_nolegend_"]
+            self.hue_names = hue_order = ["_nolegend_"]
             self.hue_vals = pd.Series(["_nolegend_"] * len(data),
                                       index=data.index)
         else:
-            hue_names = categorical_order(data[hue], hue_order)
+            # We need hue_order and hue_names because the former is used to control
+            # the order of drawing and the latter is used to control the order of
+            # the legend. hue_names can become string-typed while hue_order must
+            # retain the type of the input data. This is messy but results from
+            # the fact that PairGrid can implement the hue-mapping logic itself
+            # (and was originally written exclusively that way) but now can delegate
+            # to the axes-level functions, while always handling legend creation.
+            # See GH2307
+            hue_names = hue_order = categorical_order(data[hue], hue_order)
             if dropna:
                 # Filter NA from the list of unique hue names
                 hue_names = list(filter(pd.notnull, hue_names))
@@ -1292,10 +1300,17 @@ class PairGrid(Grid):
             called ``color`` and  ``label``.
 
         """
-
-        self.map_lower(func, **kwargs)
-        if not self._corner:
-            self.map_upper(func, **kwargs)
+        if self.square_grid:
+            self.map_lower(func, **kwargs)
+            if not self._corner:
+                self.map_upper(func, **kwargs)
+        else:
+            indices = []
+            for i, (y_var) in enumerate(self.y_vars):
+                for j, (x_var) in enumerate(self.x_vars):
+                    if x_var != y_var:
+                        indices.append((i, j))
+            self._map_bivariate(func, indices, **kwargs)
         return self
 
     def map_diag(self, func, **kwargs):
@@ -1338,7 +1353,7 @@ class PairGrid(Grid):
                             # TODO add optional density ticks (on the right)
                             # when drawing a corner plot?
 
-            if self.diag_sharey:
+            if self.diag_sharey and diag_axes:
                 # This may change in future matplotlibs
                 # See https://github.com/matplotlib/matplotlib/pull/9923
                 group = diag_axes[0].get_shared_y_axes()
@@ -1354,8 +1369,11 @@ class PairGrid(Grid):
         # Loop over diagonal variables and axes, making one plot in each
         for var, ax in zip(self.diag_vars, self.diag_axes):
 
-            plt.sca(ax)
             plot_kwargs = kwargs.copy()
+            if str(func.__module__).startswith("seaborn"):
+                plot_kwargs["ax"] = ax
+            else:
+                plt.sca(ax)
 
             vector = self.data[var]
             if self._hue_var is not None:
@@ -1388,9 +1406,13 @@ class PairGrid(Grid):
         for var, ax in zip(self.diag_vars, self.diag_axes):
             hue_grouped = self.data[var].groupby(self.hue_vals)
 
-            plt.sca(ax)
+            plot_kwargs = kwargs.copy()
+            if str(func.__module__).startswith("seaborn"):
+                plot_kwargs["ax"] = ax
+            else:
+                plt.sca(ax)
 
-            for k, label_k in enumerate(self.hue_names):
+            for k, label_k in enumerate(self._hue_order):
 
                 # Attempt to get data for this level, allowing for empty
                 try:
@@ -1407,9 +1429,9 @@ class PairGrid(Grid):
                     data_k = utils.remove_na(data_k)
 
                 if str(func.__module__).startswith("seaborn"):
-                    func(x=data_k, label=label_k, color=color, **kwargs)
+                    func(x=data_k, label=label_k, color=color, **plot_kwargs)
                 else:
-                    func(data_k, label=label_k, color=color, **kwargs)
+                    func(data_k, label=label_k, color=color, **plot_kwargs)
 
             self._clean_axis(ax)
 
@@ -1431,6 +1453,8 @@ class PairGrid(Grid):
             x_var = self.x_vars[j]
             y_var = self.y_vars[i]
             ax = self.axes[i, j]
+            if ax is None:  # i.e. we are in corner mode
+                continue
             self._plot_bivariate(x_var, y_var, ax, func, **kws)
         self._add_axis_labels()
 
@@ -1443,8 +1467,11 @@ class PairGrid(Grid):
             self._plot_bivariate_iter_hue(x_var, y_var, ax, func, **kwargs)
             return
 
-        plt.sca(ax)
         kwargs = kwargs.copy()
+        if str(func.__module__).startswith("seaborn"):
+            kwargs["ax"] = ax
+        else:
+            plt.sca(ax)
 
         if x_var == y_var:
             axes_vars = [x_var]
@@ -1475,14 +1502,19 @@ class PairGrid(Grid):
 
     def _plot_bivariate_iter_hue(self, x_var, y_var, ax, func, **kwargs):
         """Draw a bivariate plot while iterating over hue subsets."""
-        plt.sca(ax)
+        kwargs = kwargs.copy()
+        if str(func.__module__).startswith("seaborn"):
+            kwargs["ax"] = ax
+        else:
+            plt.sca(ax)
+
         if x_var == y_var:
             axes_vars = [x_var]
         else:
             axes_vars = [x_var, y_var]
 
         hue_grouped = self.data.groupby(self.hue_vals)
-        for k, label_k in enumerate(self.hue_names):
+        for k, label_k in enumerate(self._hue_order):
 
             kws = kwargs.copy()
 
@@ -1682,8 +1714,11 @@ class JointGrid(object):
             Returns ``self`` for easy method chaining.
 
         """
-        plt.sca(self.ax_joint)
         kwargs = kwargs.copy()
+        if str(func.__module__).startswith("seaborn"):
+            kwargs["ax"] = self.ax_joint
+        else:
+            plt.sca(self.ax_joint)
         if self.hue is not None:
             kwargs["hue"] = self.hue
             self._inject_kwargs(func, kwargs, self._hue_params)
@@ -1716,25 +1751,40 @@ class JointGrid(object):
             Returns ``self`` for easy method chaining.
 
         """
+        seaborn_func = (
+            str(func.__module__).startswith("seaborn")
+            # deprecated distplot has a legacy API, special case it
+            and not func.__name__ == "distplot"
+        )
+        func_params = signature(func).parameters
         kwargs = kwargs.copy()
         if self.hue is not None:
             kwargs["hue"] = self.hue
             self._inject_kwargs(func, kwargs, self._hue_params)
 
-        if "legend" in signature(func).parameters:
+        if "legend" in func_params:
             kwargs.setdefault("legend", False)
 
-        plt.sca(self.ax_marg_x)
-        if str(func.__module__).startswith("seaborn"):
-            func(x=self.x, **kwargs)
-        else:
-            func(self.x, vertical=False, **kwargs)
+        if "orientation" in func_params:
+            # e.g. plt.hist
+            orient_kw_x = {"orientation": "vertical"}
+            orient_kw_y = {"orientation": "horizontal"}
+        elif "vertical" in func_params:
+            # e.g. sns.distplot (also how did this get backwards?)
+            orient_kw_x = {"vertical": False}
+            orient_kw_y = {"vertical": True}
 
-        plt.sca(self.ax_marg_y)
-        if str(func.__module__).startswith("seaborn"):
-            func(y=self.y, **kwargs)
+        if seaborn_func:
+            func(x=self.x, ax=self.ax_marg_x, **kwargs)
         else:
-            func(self.y, vertical=True, **kwargs)
+            plt.sca(self.ax_marg_x)
+            func(self.x, **orient_kw_x, **kwargs)
+
+        if seaborn_func:
+            func(y=self.y, ax=self.ax_marg_y, **kwargs)
+        else:
+            plt.sca(self.ax_marg_y)
+            func(self.y, **orient_kw_y, **kwargs)
 
         self.ax_marg_x.yaxis.get_label().set_visible(False)
         self.ax_marg_y.xaxis.get_label().set_visible(False)
@@ -1920,6 +1970,13 @@ def pairplot(
     diag_kws = {} if diag_kws is None else diag_kws.copy()
     grid_kws = {} if grid_kws is None else grid_kws.copy()
 
+    # Resolve "auto" diag kind
+    if diag_kind == "auto":
+        if hue is None:
+            diag_kind = "kde" if kind == "kde" else "hist"
+        else:
+            diag_kind = "hist" if kind == "hist" else "kde"
+
     # Set up the PairGrid
     grid_kws.setdefault("diag_sharey", diag_kind == "hist")
     grid = PairGrid(data, vars=vars, x_vars=x_vars, y_vars=y_vars, hue=hue,
@@ -1948,13 +2005,7 @@ def pairplot(
                 plot_kws["style"] = data[hue]
                 plot_kws["markers"] = markers
 
-    # Maybe plot on the diagonal
-    if diag_kind == "auto":
-        if hue is None:
-            diag_kind = "kde" if kind == "kde" else "hist"
-        else:
-            diag_kind = "hist" if kind == "hist" else "kde"
-
+    # Draw the marginal plots on the diagonal
     diag_kws = diag_kws.copy()
     diag_kws.setdefault("legend", False)
     if diag_kind == "hist":
@@ -2038,6 +2089,13 @@ def jointplot(
     # Validate the plot kind
     plot_kinds = ["scatter", "hist", "hex", "kde", "reg", "resid"]
     _check_argument("kind", plot_kinds, kind)
+
+    # Raise early if using `hue` with a kind that does not support it
+    if hue is not None and kind in ["hex", "reg", "resid"]:
+        msg = (
+            f"Use of `hue` with `kind='{kind}'` is not currently supported."
+        )
+        raise ValueError(msg)
 
     # Make a colormap based off the plot color
     # (Currently used only for kind="hex")

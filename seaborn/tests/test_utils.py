@@ -26,7 +26,9 @@ from ..utils import (
     get_color_cycle,
     remove_na,
     load_dataset,
-    _assign_default_kwargs
+    _assign_default_kwargs,
+    _draw_figure,
+    _deprecate_ci,
 )
 
 
@@ -56,37 +58,6 @@ def _network(t=None, url="https://github.com"):
             f.close()
             return t(*args, **kwargs)
     return wrapper
-
-
-def test_pmf_hist_basics():
-    """Test the function to return barplot args for pmf hist."""
-    with pytest.warns(FutureWarning):
-        out = utils.pmf_hist(a_norm)
-    assert len(out) == 3
-    x, h, w = out
-    assert len(x) == len(h)
-
-    # Test simple case
-    a = np.arange(10)
-    with pytest.warns(FutureWarning):
-        x, h, w = utils.pmf_hist(a, 10)
-    assert np.all(h == h[0])
-
-    # Test width
-    with pytest.warns(FutureWarning):
-        x, h, w = utils.pmf_hist(a_norm)
-    assert x[1] - x[0] == w
-
-    # Test normalization
-    with pytest.warns(FutureWarning):
-        x, h, w = utils.pmf_hist(a_norm)
-    assert sum(h) == pytest.approx(1)
-    assert h.max() <= 1
-
-    # Test bins
-    with pytest.warns(FutureWarning):
-        x, h, w = utils.pmf_hist(a_norm, 20)
-    assert len(x) == 20
 
 
 def test_ci_to_errsize():
@@ -128,24 +99,6 @@ def test_saturate():
     """Test performance of saturation function."""
     out = utils.saturate((.75, .25, .25))
     assert out == (1, 0, 0)
-
-
-@pytest.mark.parametrize(
-    "p,annot", [(.0001, "***"), (.001, "**"), (.01, "*"), (.09, "."), (1, "")]
-)
-def test_sig_stars(p, annot):
-    """Test the sig stars function."""
-    with pytest.warns(FutureWarning):
-        stars = utils.sig_stars(p)
-        assert stars == annot
-
-
-def test_iqr():
-    """Test the IQR function."""
-    a = np.arange(5)
-    with pytest.warns(FutureWarning):
-        iqr = utils.iqr(a)
-    assert iqr == 2
 
 
 @pytest.mark.parametrize(
@@ -496,3 +449,30 @@ def test_assign_default_kwargs():
 
     kws = _assign_default_kwargs(kws, f, g)
     assert kws == {"c": 3, "d": 2}
+
+
+def test_draw_figure():
+
+    f, ax = plt.subplots()
+    ax.plot(["a", "b", "c"], [1, 2, 3])
+    _draw_figure(f)
+    assert not f.stale
+    # ticklabels are not populated until a draw, but this may change
+    assert ax.get_xticklabels()[0].get_text() == "a"
+
+
+def test_deprecate_ci():
+
+    msg = "The `ci` parameter is deprecated; use `errorbar="
+
+    with pytest.warns(UserWarning, match=msg + "None"):
+        out = _deprecate_ci(None, None)
+    assert out is None
+
+    with pytest.warns(UserWarning, match=msg + "'sd'"):
+        out = _deprecate_ci(None, "sd")
+    assert out == "sd"
+
+    with pytest.warns(UserWarning, match=msg + r"\('ci', 68\)"):
+        out = _deprecate_ci(None, 68)
+    assert out == ("ci", 68)

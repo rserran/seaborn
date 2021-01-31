@@ -27,14 +27,20 @@ URL = 'https://seaborn.pydata.org'
 LICENSE = 'BSD (3-clause)'
 DOWNLOAD_URL = 'https://github.com/mwaskom/seaborn/'
 VERSION = '0.12.0.dev0'
-PYTHON_REQUIRES = ">=3.6"
+PYTHON_REQUIRES = ">=3.7"
 
 INSTALL_REQUIRES = [
-    'numpy>=1.15',
-    'scipy>=1.0',
-    'pandas>=0.23',
-    'matplotlib>=2.2',
+    'numpy>=1.16',
+    'pandas>=0.24',
+    'matplotlib>=3.0',
 ]
+
+EXTRAS_REQUIRE = {
+    'all': [
+        'scipy>=1.2',
+        'statsmodels>=0.9',
+    ]
+}
 
 
 PACKAGES = [
@@ -46,9 +52,9 @@ PACKAGES = [
 
 CLASSIFIERS = [
     'Intended Audience :: Science/Research',
-    'Programming Language :: Python :: 3.6',
     'Programming Language :: Python :: 3.7',
     'Programming Language :: Python :: 3.8',
+    'Programming Language :: Python :: 3.9',
     'License :: OSI Approved :: BSD License',
     'Topic :: Scientific/Engineering :: Visualization',
     'Topic :: Multimedia :: Graphics',
@@ -79,6 +85,7 @@ if __name__ == "__main__":
         download_url=DOWNLOAD_URL,
         python_requires=PYTHON_REQUIRES,
         install_requires=INSTALL_REQUIRES,
+        extras_require=EXTRAS_REQUIRE,
         packages=PACKAGES,
         classifiers=CLASSIFIERS
     )

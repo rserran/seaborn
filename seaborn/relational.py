@@ -1,7 +1,6 @@
 import warnings
 
 import numpy as np
-import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
@@ -9,12 +8,12 @@ from ._core import (
     VectorPlotter,
 )
 from .utils import (
-    ci_to_errsize,
     locator_to_legend_entries,
     adjust_legend_subtitles,
-    ci as ci_func
+    _default_color,
+    _deprecate_ci,
 )
-from .algorithms import bootstrap
+from ._statistics import EstimateAggregator
 from .axisgrid import FacetGrid, _facet_docs
 from ._decorators import _deprecate_positional_args
 from ._docstrings import (
@@ -144,9 +143,11 @@ estimator : name of pandas method or callable or None
     """,
     ci="""
 ci : int or "sd" or None
-    Size of the confidence interval to draw when aggregating with an
-    estimator. "sd" means to draw the standard deviation of the data.
-    Setting to ``None`` will skip bootstrapping.
+    Size of the confidence interval to draw when aggregating.
+
+    .. deprecated:: 0.12.0
+        Use the new `errorbar` parameter for more flexibility.
+
     """,
     n_boot="""
 n_boot : int
@@ -180,6 +181,7 @@ _param_docs = DocstringComponents.from_nested_components(
     core=_core_docs["params"],
     facets=DocstringComponents(_facet_docs),
     rel=DocstringComponents(_relational_docs),
+    stat=DocstringComponents.from_function_params(EstimateAggregator.__init__),
 )
 
 
@@ -354,10 +356,11 @@ class _LinePlotter(_RelationalPlotter):
         self, *,
         data=None, variables={},
         estimator=None, ci=None, n_boot=None, seed=None,
-        sort=True, err_style=None, err_kws=None, legend=None
+        sort=True, err_style=None, err_kws=None, legend=None,
+        errorbar=None,
     ):
 
-        # TODO this is messy, we want the mapping to be agnoistic about
+        # TODO this is messy, we want the mapping to be agnostic about
         # the kind of plot to draw, but for the time being we need to set
         # this information so the SizeMapping can use it
         self._default_size_range = (
@@ -367,6 +370,7 @@ class _LinePlotter(_RelationalPlotter):
         super().__init__(data=data, variables=variables)
 
         self.estimator = estimator
+        self.errorbar = errorbar
         self.ci = ci
         self.n_boot = n_boot
         self.seed = seed
@@ -375,51 +379,6 @@ class _LinePlotter(_RelationalPlotter):
         self.err_kws = {} if err_kws is None else err_kws
 
         self.legend = legend
-
-    def aggregate(self, vals, grouper, units=None):
-        """Compute an estimate and confidence interval using grouper."""
-        func = self.estimator
-        ci = self.ci
-        n_boot = self.n_boot
-        seed = self.seed
-
-        # Define a "null" CI for when we only have one value
-        null_ci = pd.Series(index=["low", "high"], dtype=float)
-
-        # Function to bootstrap in the context of a pandas group by
-        def bootstrapped_cis(vals):
-
-            if len(vals) <= 1:
-                return null_ci
-
-            boots = bootstrap(vals, func=func, n_boot=n_boot, seed=seed)
-            cis = ci_func(boots, ci)
-            return pd.Series(cis, ["low", "high"])
-
-        # Group and get the aggregation estimate
-        grouped = vals.groupby(grouper, sort=self.sort)
-        est = grouped.agg(func)
-
-        # Exit early if we don't want a confidence interval
-        if ci is None:
-            return est.index, est, None
-
-        # Compute the error bar extents
-        if ci == "sd":
-            sd = grouped.std()
-            cis = pd.DataFrame(np.c_[est - sd, est + sd],
-                               index=est.index,
-                               columns=["low", "high"]).stack()
-        else:
-            cis = grouped.apply(bootstrapped_cis)
-
-        # Unpack the CIs into "wide" format for plotting
-        if cis.notnull().any():
-            cis = cis.unstack().reindex(est.index)
-        else:
-            cis = None
-
-        return est.index, est, cis
 
     def plot(self, ax, kws):
         """Draw the plot onto an axes, passing matplotlib kwargs."""
@@ -433,20 +392,8 @@ class _LinePlotter(_RelationalPlotter):
         # gotten from the corresponding matplotlib function, and calling the
         # function will advance the axes property cycle.
 
-        scout, = ax.plot([], [], **kws)
-
-        orig_color = kws.pop("color", scout.get_color())
-        orig_marker = kws.pop("marker", scout.get_marker())
-        orig_linewidth = kws.pop("linewidth",
-                                 kws.pop("lw", scout.get_linewidth()))
-
-        # Note that scout.get_linestyle() is` not correct as of mpl 3.2
-        orig_linestyle = kws.pop("linestyle", kws.pop("ls", None))
-
         kws.setdefault("markeredgewidth", kws.pop("mew", .75))
         kws.setdefault("markeredgecolor", kws.pop("mec", "w"))
-
-        scout.remove()
 
         # Set default error kwargs
         err_kws = self.err_kws.copy()
@@ -458,13 +405,20 @@ class _LinePlotter(_RelationalPlotter):
             err = "`err_style` must be 'band' or 'bars', not {}"
             raise ValueError(err.format(self.err_style))
 
-        # Set the default artist keywords
-        kws.update(dict(
-            color=orig_color,
-            marker=orig_marker,
-            linewidth=orig_linewidth,
-            linestyle=orig_linestyle,
-        ))
+        # Initialize the aggregation object
+        agg = EstimateAggregator(
+            self.estimator, self.errorbar, n_boot=self.n_boot, seed=self.seed,
+        )
+
+        # TODO abstract variable to aggregate over here-ish. Better name?
+        agg_var = "y"
+        grouper = ["x"]
+
+        # TODO How to handle NA? We don't want NA to propagate through to the
+        # estimate/CI when some values are present, but we would also like
+        # matplotlib to show "gaps" in the line when all values are missing.
+        # This is straightforward absent aggregation, but complicated with it.
+        # If we want to use nas, we need to conditionalize dropna in iter_data.
 
         # Loop over the semantic subsets and add to the plot
         grouping_vars = "hue", "size", "style"
@@ -475,76 +429,79 @@ class _LinePlotter(_RelationalPlotter):
                 sort_cols = [var for var in sort_vars if var in self.variables]
                 sub_data = sub_data.sort_values(sort_cols)
 
-            # Due to the original design, code below was written assuming that
-            # sub_data always has x, y, and units columns, which may be empty.
-            # Adding this here to avoid otherwise disruptive changes, but it
-            # could get removed if the rest of the logic is sorted out
-            null = pd.Series(index=sub_data.index, dtype=float)
-
-            x = sub_data.get("x", null)
-            y = sub_data.get("y", null)
-            u = sub_data.get("units", null)
-
             if self.estimator is not None:
                 if "units" in self.variables:
+                    # TODO eventually relax this constraint
                     err = "estimator must be None when specifying units"
                     raise ValueError(err)
-                x, y, y_ci = self.aggregate(y, x, u)
+                grouped = sub_data.groupby(grouper, sort=self.sort)
+                # Could pass as_index=False instead of reset_index,
+                # but that fails on a corner case with older pandas.
+                sub_data = grouped.apply(agg, agg_var).reset_index()
+
+            # TODO this is pretty ad hoc ; see GH2409
+            for var in "xy":
+                if self._log_scaled(var):
+                    for col in sub_data.filter(regex=f"^{var}"):
+                        sub_data[col] = np.power(10, sub_data[col])
+
+            # --- Draw the main line(s)
+
+            if "units" in self.variables:   # XXX why not add to grouping variables?
+                lines = []
+                for _, unit_data in sub_data.groupby("units"):
+                    lines.extend(ax.plot(unit_data["x"], unit_data["y"], **kws))
             else:
-                y_ci = None
+                lines = ax.plot(sub_data["x"], sub_data["y"], **kws)
 
-            if "hue" in sub_vars:
-                kws["color"] = self._hue_map(sub_vars["hue"])
-            if "size" in sub_vars:
-                kws["linewidth"] = self._size_map(sub_vars["size"])
-            if "style" in sub_vars:
-                attributes = self._style_map(sub_vars["style"])
-                if "dashes" in attributes:
-                    kws["dashes"] = attributes["dashes"]
-                if "marker" in attributes:
-                    kws["marker"] = attributes["marker"]
+            for line in lines:
 
-            line, = ax.plot([], [], **kws)
+                if "hue" in sub_vars:
+                    line.set_color(self._hue_map(sub_vars["hue"]))
+
+                if "size" in sub_vars:
+                    line.set_linewidth(self._size_map(sub_vars["size"]))
+
+                if "style" in sub_vars:
+                    attributes = self._style_map(sub_vars["style"])
+                    if "dashes" in attributes:
+                        line.set_dashes(attributes["dashes"])
+                    if "marker" in attributes:
+                        line.set_marker(attributes["marker"])
+
             line_color = line.get_color()
             line_alpha = line.get_alpha()
             line_capstyle = line.get_solid_capstyle()
-            line.remove()
-
-            # --- Draw the main line
-
-            x, y = np.asarray(x), np.asarray(y)
-
-            if "units" in self.variables:
-                for u_i in u.unique():
-                    rows = np.asarray(u == u_i)
-                    ax.plot(x[rows], y[rows], **kws)
-            else:
-                line, = ax.plot(x, y, **kws)
 
             # --- Draw the confidence intervals
 
-            if y_ci is not None:
+            if self.estimator is not None and self.errorbar is not None:
 
-                low, high = np.asarray(y_ci["low"]), np.asarray(y_ci["high"])
+                # TODO handling of orientation will need to happen here
 
                 if self.err_style == "band":
 
-                    ax.fill_between(x, low, high, color=line_color, **err_kws)
+                    ax.fill_between(
+                        sub_data["x"], sub_data["ymin"], sub_data["ymax"],
+                        color=line_color, **err_kws
+                    )
 
                 elif self.err_style == "bars":
 
-                    y_err = ci_to_errsize((low, high), y)
-                    ebars = ax.errorbar(x, y, y_err, linestyle="",
-                                        color=line_color, alpha=line_alpha,
-                                        **err_kws)
+                    error_deltas = (
+                        sub_data["y"] - sub_data["ymin"],
+                        sub_data["ymax"] - sub_data["y"],
+                    )
+                    ebars = ax.errorbar(
+                        sub_data["x"], sub_data["y"], error_deltas,
+                        linestyle="", color=line_color, alpha=line_alpha,
+                        **err_kws
+                    )
 
                     # Set the capstyle properly on the error bars
                     for obj in ebars.get_children():
-                        try:
+                        if isinstance(obj, mpl.collections.LineCollection):
                             obj.set_capstyle(line_capstyle)
-                        except AttributeError:
-                            # Does not exist on mpl < 2.2
-                            pass
 
         # Finalize the axes details
         self._add_axis_labels(ax)
@@ -584,31 +541,10 @@ class _ScatterPlotter(_RelationalPlotter):
 
     def plot(self, ax, kws):
 
-        # Draw a test plot, using the passed in kwargs. The goal here is to
-        # honor both (a) the current state of the plot cycler and (b) the
-        # specified kwargs on all the lines we will draw, overriding when
-        # relevant with the data semantics. Note that we won't cycle
-        # internally; in other words, if ``hue`` is not used, all elements will
-        # have the same color, but they will have the color that you would have
-        # gotten from the corresponding matplotlib function, and calling the
-        # function will advance the axes property cycle.
-
-        scout_size = max(
-            np.atleast_1d(kws.get("s", [])).shape[0],
-            np.atleast_1d(kws.get("c", [])).shape[0],
-        )
-        scout_x = scout_y = np.full(scout_size, np.nan)
-        scout = ax.scatter(scout_x, scout_y, **kws)
-        s = kws.pop("s", scout.get_sizes())
-        c = kws.pop("c", scout.get_facecolors())
-        scout.remove()
-
-        kws.pop("color", None)  # TODO is this optimal?
-
         # --- Determine the visual attributes of the plot
 
-        data = self.plot_data[list(self.variables)].dropna()
-        if not data.size:
+        data = self.plot_data.dropna()
+        if data.empty:
             return
 
         # Define the vectors of x and y positions
@@ -616,15 +552,7 @@ class _ScatterPlotter(_RelationalPlotter):
         x = data.get("x", empty)
         y = data.get("y", empty)
 
-        # Apply the mapping from semantic variables to artist attributes
-        if "hue" in self.variables:
-            c = self._hue_map(data["hue"])
-
-        if "size" in self.variables:
-            s = self._size_map(data["size"])
-
         # Set defaults for other visual attributes
-        kws.setdefault("linewidth", .08 * np.sqrt(np.percentile(s, 10)))
         kws.setdefault("edgecolor", "w")
 
         if "style" in self.variables:
@@ -640,15 +568,25 @@ class _ScatterPlotter(_RelationalPlotter):
         kws["alpha"] = 1 if self.alpha == "auto" else self.alpha
 
         # Draw the scatter plot
-        args = np.asarray(x), np.asarray(y), np.asarray(s), np.asarray(c)
-        points = ax.scatter(*args, **kws)
+        points = ax.scatter(x=x, y=y, **kws)
 
-        # Update the paths to get different marker shapes.
-        # This has to be done here because ax.scatter allows varying sizes
-        # and colors but only a single marker shape per call.
+        # Apply the mapping from semantic variables to artist attributes
+
+        if "hue" in self.variables:
+            points.set_facecolors(self._hue_map(data["hue"]))
+
+        if "size" in self.variables:
+            points.set_sizes(self._size_map(data["size"]))
+
         if "style" in self.variables:
             p = [self._style_map(val, "path") for val in data["style"]]
             points.set_paths(p)
+
+        # Apply dependant default attributes
+
+        if "linewidth" not in kws:
+            sizes = points.get_sizes()
+            points.set_linewidths(.08 * np.sqrt(np.percentile(sizes, 10)))
 
         # Finalize the axes details
         self._add_axis_labels(ax)
@@ -669,16 +607,22 @@ def lineplot(
     palette=None, hue_order=None, hue_norm=None,
     sizes=None, size_order=None, size_norm=None,
     dashes=True, markers=None, style_order=None,
-    units=None, estimator="mean", ci=95, n_boot=1000, seed=None,
+    units=None, estimator="mean", ci="deprecated", n_boot=1000, seed=None,
     sort=True, err_style="band", err_kws=None,
-    legend="auto", ax=None, **kwargs
+    legend="auto",
+    errorbar=("ci", 95),
+    ax=None, **kwargs
 ):
+
+    # Handle deprecation of ci parameter
+    errorbar = _deprecate_ci(errorbar, ci)
 
     variables = _LinePlotter.get_semantics(locals())
     p = _LinePlotter(
         data=data, variables=variables,
         estimator=estimator, ci=ci, n_boot=n_boot, seed=seed,
         sort=sort, err_style=err_style, err_kws=err_kws, legend=legend,
+        errorbar=errorbar,
     )
 
     p.map_hue(palette=palette, order=hue_order, norm=hue_norm)
@@ -688,10 +632,18 @@ def lineplot(
     if ax is None:
         ax = plt.gca()
 
+    if style is None and not {"ls", "linestyle"} & set(kwargs):  # XXX
+        kwargs["dashes"] = "" if dashes is None or isinstance(dashes, bool) else dashes
+
     if not p.has_xy_data:
         return ax
 
     p._attach(ax)
+
+    # Other functions have color as an explicit param,
+    # and we should probably do that here too
+    color = kwargs.pop("color", kwargs.pop("c", None))
+    kwargs["color"] = _default_color(ax.plot, hue, color, kwargs)
 
     p.plot(ax, kwargs)
     return ax
@@ -749,6 +701,7 @@ err_kws : dict of keyword arguments
     kwargs are passed either to :meth:`matplotlib.axes.Axes.fill_between`
     or :meth:`matplotlib.axes.Axes.errorbar`, depending on ``err_style``.
 {params.rel.legend}
+{params.stat.errorbar}
 {params.core.ax}
 kwargs : key, value mappings
     Other keyword arguments are passed down to
@@ -787,7 +740,8 @@ def scatterplot(
     x_bins=None, y_bins=None,
     units=None, estimator=None, ci=95, n_boot=1000,
     alpha=None, x_jitter=None, y_jitter=None,
-    legend="auto", ax=None, **kwargs
+    legend="auto", ax=None,
+    **kwargs
 ):
 
     variables = _ScatterPlotter.get_semantics(locals())
@@ -809,6 +763,11 @@ def scatterplot(
         return ax
 
     p._attach(ax)
+
+    # Other functions have color as an explicit param,
+    # and we should probably do that here too
+    color = kwargs.pop("color", None)
+    kwargs["color"] = _default_color(ax.scatter, hue, color, kwargs)
 
     p.plot(ax, kwargs)
 

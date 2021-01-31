@@ -1,9 +1,9 @@
+from distutils.version import LooseVersion
 from itertools import product
-import warnings
 import numpy as np
-import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+from matplotlib.colors import same_color, to_rgba
 
 import pytest
 from numpy.testing import assert_array_equal
@@ -18,6 +18,9 @@ from ..relational import (
     lineplot,
     scatterplot
 )
+
+from ..utils import _draw_figure
+from .._testing import assert_plots_equal
 
 
 @pytest.fixture(params=[
@@ -49,36 +52,36 @@ class Helpers:
             rgbs.append(rgb)
         return rgbs
 
-    def colors_equal(self, *args):
-
-        equal = True
-
-        args = [
-            mpl.colors.hex2color(a) if isinstance(a, str) and a.startswith("#") else a
-            for a in args
-        ]
-
-        if np.ndim(args[0]) < 2:
-            args = [[a] for a in args]
-
-        for c1, c2 in zip(*args):
-            if isinstance(c1, np.ndarray):
-                c1 = c1.squeeze()
-            if isinstance(c2, np.ndarray):
-                c2 = c2.squeeze()
-            c1 = mpl.colors.to_rgb(c1)
-            c2 = mpl.colors.to_rgb(c2)
-            equal &= c1 == c2
-
-        return equal
-
     def paths_equal(self, *args):
 
-        equal = True
+        equal = all([len(a) == len(args[0]) for a in args])
+
         for p1, p2 in zip(*args):
             equal &= np.array_equal(p1.vertices, p2.vertices)
             equal &= np.array_equal(p1.codes, p2.codes)
         return equal
+
+
+class SharedAxesLevelTests:
+
+    def test_color(self, long_df):
+
+        ax = plt.figure().subplots()
+        self.func(data=long_df, x="x", y="y", ax=ax)
+        assert self.get_last_color(ax) == to_rgba("C0")
+
+        ax = plt.figure().subplots()
+        self.func(data=long_df, x="x", y="y", ax=ax)
+        self.func(data=long_df, x="x", y="y", ax=ax)
+        assert self.get_last_color(ax) == to_rgba("C1")
+
+        ax = plt.figure().subplots()
+        self.func(data=long_df, x="x", y="y", color="C2", ax=ax)
+        assert self.get_last_color(ax) == to_rgba("C2")
+
+        ax = plt.figure().subplots()
+        self.func(data=long_df, x="x", y="y", c="C2", ax=ax)
+        assert self.get_last_color(ax) == to_rgba("C2")
 
 
 class TestRelationalPlotter(Helpers):
@@ -96,11 +99,11 @@ class TestRelationalPlotter(Helpers):
         assert_array_equal(x, expected_x)
 
         y = p.plot_data["y"]
-        expected_y = wide_df.values.ravel(order="f")
+        expected_y = wide_df.to_numpy().ravel(order="f")
         assert_array_equal(y, expected_y)
 
         hue = p.plot_data["hue"]
-        expected_hue = np.repeat(wide_df.columns.values, wide_df.shape[0])
+        expected_hue = np.repeat(wide_df.columns.to_numpy(), wide_df.shape[0])
         assert_array_equal(hue, expected_hue)
 
         style = p.plot_data["style"]
@@ -128,12 +131,12 @@ class TestRelationalPlotter(Helpers):
         assert_array_equal(x, expected_x)
 
         y = p.plot_data["y"]
-        expected_y = numeric_df.values.ravel(order="f")
+        expected_y = numeric_df.to_numpy().ravel(order="f")
         assert_array_equal(y, expected_y)
 
         hue = p.plot_data["hue"]
         expected_hue = np.repeat(
-            numeric_df.columns.values, numeric_df.shape[0]
+            numeric_df.columns.to_numpy(), numeric_df.shape[0]
         )
         assert_array_equal(hue, expected_hue)
 
@@ -439,120 +442,6 @@ class TestRelationalPlotter(Helpers):
         assert p.variables["hue"] is None
         assert p.variables["style"] is None
 
-    def test_long_df(self, long_df, long_semantics):
-
-        p = _RelationalPlotter(data=long_df, variables=long_semantics)
-        assert p.input_format == "long"
-        assert p.variables == long_semantics
-
-        for key, val in long_semantics.items():
-            assert_array_equal(p.plot_data[key], long_df[val])
-
-    def test_long_df_with_index(self, long_df, long_semantics):
-
-        p = _RelationalPlotter(
-            data=long_df.set_index("a"),
-            variables=long_semantics,
-        )
-        assert p.input_format == "long"
-        assert p.variables == long_semantics
-
-        for key, val in long_semantics.items():
-            assert_array_equal(p.plot_data[key], long_df[val])
-
-    def test_long_df_with_multiindex(self, long_df, long_semantics):
-
-        p = _RelationalPlotter(
-            data=long_df.set_index(["a", "x"]),
-            variables=long_semantics,
-        )
-        assert p.input_format == "long"
-        assert p.variables == long_semantics
-
-        for key, val in long_semantics.items():
-            assert_array_equal(p.plot_data[key], long_df[val])
-
-    def test_long_dict(self, long_dict, long_semantics):
-
-        p = _RelationalPlotter(
-            data=long_dict,
-            variables=long_semantics,
-        )
-        assert p.input_format == "long"
-        assert p.variables == long_semantics
-
-        for key, val in long_semantics.items():
-            assert_array_equal(p.plot_data[key], pd.Series(long_dict[val]))
-
-    @pytest.mark.parametrize(
-        "vector_type",
-        ["series", "numpy", "list"],
-    )
-    def test_long_vectors(self, long_df, long_semantics, vector_type):
-
-        variables = {key: long_df[val] for key, val in long_semantics.items()}
-        if vector_type == "numpy":
-            # Requires pandas >= 0.24
-            # {key: val.to_numpy() for key, val in variables.items()}
-            variables = {
-                key: np.asarray(val) for key, val in variables.items()
-            }
-        elif vector_type == "list":
-            # Requires pandas >= 0.24
-            # {key: val.to_list() for key, val in variables.items()}
-            variables = {
-                key: val.tolist() for key, val in variables.items()
-            }
-
-        p = _RelationalPlotter(variables=variables)
-        assert p.input_format == "long"
-
-        assert list(p.variables) == list(long_semantics)
-        if vector_type == "series":
-            assert p.variables == long_semantics
-
-        for key, val in long_semantics.items():
-            assert_array_equal(p.plot_data[key], long_df[val])
-
-    def test_long_undefined_variables(self, long_df):
-
-        p = _RelationalPlotter()
-
-        with pytest.raises(ValueError):
-            p.assign_variables(
-                data=long_df, variables=dict(x="not_in_df"),
-            )
-
-        with pytest.raises(ValueError):
-            p.assign_variables(
-                data=long_df, variables=dict(x="x", y="not_in_df"),
-            )
-
-        with pytest.raises(ValueError):
-            p.assign_variables(
-                data=long_df, variables=dict(x="x", y="y", hue="not_in_df"),
-            )
-
-    @pytest.mark.parametrize(
-        "arg", [[], np.array([]), pd.DataFrame()],
-    )
-    def test_empty_data_input(self, arg):
-
-        p = _RelationalPlotter(data=arg)
-        assert not p.variables
-
-        if not isinstance(arg, pd.DataFrame):
-            p = _RelationalPlotter(variables=dict(x=arg, y=arg))
-            assert not p.variables
-
-    def test_units(self, repeated_df):
-
-        p = _RelationalPlotter(
-            data=repeated_df,
-            variables=dict(x="x", y="y", units="u"),
-        )
-        assert_array_equal(p.plot_data["units"], repeated_df["u"])
-
     def test_relplot_simple(self, long_df):
 
         g = relplot(data=long_df, x="x", y="y", kind="scatter")
@@ -627,7 +516,7 @@ class TestRelationalPlotter(Helpers):
 
         g = relplot(data=wide_df)
         x, y = g.ax.collections[0].get_offsets().T
-        assert_array_equal(y, wide_df.values.T.ravel())
+        assert_array_equal(y, wide_df.to_numpy().T.ravel())
 
     def test_relplot_hues(self, long_df):
 
@@ -642,7 +531,7 @@ class TestRelationalPlotter(Helpers):
         for (_, grp_df), ax in zip(grouped, g.axes.flat):
             points = ax.collections[0]
             expected_hues = [palette[val] for val in grp_df["a"]]
-            assert self.colors_equal(points.get_facecolors(), expected_hues)
+            assert same_color(points.get_facecolors(), expected_hues)
 
     def test_relplot_sizes(self, long_df):
 
@@ -737,86 +626,13 @@ class TestRelationalPlotter(Helpers):
         assert len(g.ax.collections) > 0
 
 
-class TestLinePlotter(Helpers):
+class TestLinePlotter(SharedAxesLevelTests, Helpers):
 
-    def test_aggregate(self, long_df):
+    func = staticmethod(lineplot)
 
-        p = _LinePlotter(data=long_df, variables=dict(x="x", y="y"))
-        p.n_boot = 10000
-        p.sort = False
+    def get_last_color(self, ax):
 
-        x = pd.Series(np.tile([1, 2], 100))
-        y = pd.Series(np.random.randn(200))
-        y_mean = y.groupby(x).mean()
-
-        def sem(x):
-            return np.std(x) / np.sqrt(len(x))
-
-        y_sem = y.groupby(x).apply(sem)
-        y_cis = pd.DataFrame(dict(low=y_mean - y_sem,
-                                  high=y_mean + y_sem),
-                             columns=["low", "high"])
-
-        p.ci = 68
-        p.estimator = "mean"
-        index, est, cis = p.aggregate(y, x)
-        assert_array_equal(index.values, x.unique())
-        assert est.index.equals(index)
-        assert est.values == pytest.approx(y_mean.values)
-        assert cis.values == pytest.approx(y_cis.values, 4)
-        assert list(cis.columns) == ["low", "high"]
-
-        p.estimator = np.mean
-        index, est, cis = p.aggregate(y, x)
-        assert_array_equal(index.values, x.unique())
-        assert est.index.equals(index)
-        assert est.values == pytest.approx(y_mean.values)
-        assert cis.values == pytest.approx(y_cis.values, 4)
-        assert list(cis.columns) == ["low", "high"]
-
-        p.seed = 0
-        _, _, ci1 = p.aggregate(y, x)
-        _, _, ci2 = p.aggregate(y, x)
-        assert_array_equal(ci1, ci2)
-
-        y_std = y.groupby(x).std()
-        y_cis = pd.DataFrame(dict(low=y_mean - y_std,
-                                  high=y_mean + y_std),
-                             columns=["low", "high"])
-
-        p.ci = "sd"
-        index, est, cis = p.aggregate(y, x)
-        assert_array_equal(index.values, x.unique())
-        assert est.index.equals(index)
-        assert est.values == pytest.approx(y_mean.values)
-        assert cis.values == pytest.approx(y_cis.values)
-        assert list(cis.columns) == ["low", "high"]
-
-        p.ci = None
-        index, est, cis = p.aggregate(y, x)
-        assert cis is None
-
-        p.ci = 68
-        x, y = pd.Series([1, 2, 3]), pd.Series([4, 3, 2])
-        index, est, cis = p.aggregate(y, x)
-        assert_array_equal(index.values, x)
-        assert_array_equal(est.values, y)
-        assert cis is None
-
-        x, y = pd.Series([1, 1, 2]), pd.Series([2, 3, 4])
-        index, est, cis = p.aggregate(y, x)
-        assert cis.loc[2].isnull().all()
-
-        p = _LinePlotter(data=long_df, variables=dict(x="x", y="y"))
-        p.estimator = "mean"
-        p.n_boot = 100
-        p.ci = 95
-        x = pd.Categorical(["a", "b", "a", "b"], ["a", "b", "c"])
-        y = pd.Series([1, 1, 2, 2])
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", RuntimeWarning)
-            index, est, cis = p.aggregate(y, x)
-            assert cis.loc[["c"]].isnull().all().all()
+        return to_rgba(ax.lines[-1].get_color())
 
     def test_legend_data(self, long_df):
 
@@ -1024,8 +840,8 @@ class TestLinePlotter(Helpers):
         )
         p.plot(ax, {})
         line, = ax.lines
-        assert_array_equal(line.get_xdata(), long_df.x.values)
-        assert_array_equal(line.get_ydata(), long_df.y.values)
+        assert_array_equal(line.get_xdata(), long_df.x.to_numpy())
+        assert_array_equal(line.get_ydata(), long_df.y.to_numpy())
 
         ax.clear()
         p.plot(ax, {"color": "k", "label": "test"})
@@ -1043,8 +859,8 @@ class TestLinePlotter(Helpers):
         p.plot(ax, {})
         line, = ax.lines
         sorted_data = long_df.sort_values(["x", "y"])
-        assert_array_equal(line.get_xdata(), sorted_data.x.values)
-        assert_array_equal(line.get_ydata(), sorted_data.y.values)
+        assert_array_equal(line.get_xdata(), sorted_data.x.to_numpy())
+        assert_array_equal(line.get_ydata(), sorted_data.y.to_numpy())
 
         p = _LinePlotter(
             data=long_df,
@@ -1100,21 +916,38 @@ class TestLinePlotter(Helpers):
         p = _LinePlotter(
             data=long_df,
             variables=dict(x="x", y="y"),
-            estimator="mean", err_style="band", ci="sd", sort=True
+            estimator="mean", err_style="band", errorbar="sd", sort=True
         )
 
         ax.clear()
         p.plot(ax, {})
         line, = ax.lines
         expected_data = long_df.groupby("x").y.mean()
-        assert_array_equal(line.get_xdata(), expected_data.index.values)
-        assert np.allclose(line.get_ydata(), expected_data.values)
+        assert_array_equal(line.get_xdata(), expected_data.index.to_numpy())
+        assert np.allclose(line.get_ydata(), expected_data.to_numpy())
         assert len(ax.collections) == 1
+
+        # Test that nans do not propagate to means or CIs
+
+        p = _LinePlotter(
+            variables=dict(
+                x=[1, 1, 1, 2, 2, 2, 3, 3, 3],
+                y=[1, 2, 3, 3, np.nan, 5, 4, 5, 6],
+            ),
+            estimator="mean", err_style="band", errorbar="ci", n_boot=100, sort=True,
+        )
+        ax.clear()
+        p.plot(ax, {})
+        line, = ax.lines
+        assert line.get_xdata().tolist() == [1, 2, 3]
+        err_band = ax.collections[0].get_paths()
+        assert len(err_band) == 1
+        assert len(err_band[0].vertices) == 9
 
         p = _LinePlotter(
             data=long_df,
             variables=dict(x="x", y="y", hue="a"),
-            estimator="mean", err_style="band", ci="sd"
+            estimator="mean", err_style="band", errorbar="sd"
         )
 
         ax.clear()
@@ -1126,7 +959,7 @@ class TestLinePlotter(Helpers):
         p = _LinePlotter(
             data=long_df,
             variables=dict(x="x", y="y", hue="a"),
-            estimator="mean", err_style="bars", ci="sd"
+            estimator="mean", err_style="bars", errorbar="sd"
         )
 
         ax.clear()
@@ -1204,6 +1037,34 @@ class TestLinePlotter(Helpers):
         ax.clear()
         p.plot(ax, {})
 
+    def test_log_scale(self):
+
+        f, ax = plt.subplots()
+        ax.set_xscale("log")
+
+        x = [1, 10, 100]
+        y = [1, 2, 3]
+
+        lineplot(x=x, y=y)
+        line = ax.lines[0]
+        assert_array_equal(line.get_xdata(), x)
+        assert_array_equal(line.get_ydata(), y)
+
+        f, ax = plt.subplots()
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+
+        x = [1, 1, 2, 2]
+        y = [1, 10, 1, 100]
+
+        lineplot(x=x, y=y, err_style="bars", errorbar=("pi", 100))
+        line = ax.lines[0]
+        assert line.get_ydata()[1] == 10
+
+        ebars = ax.collections[0].get_segments()
+        assert_array_equal(ebars[0][:, 1], y[:2])
+        assert_array_equal(ebars[1][:, 1], y[2:])
+
     def test_axis_labels(self, long_df):
 
         f, (ax1, ax2) = plt.subplots(1, 2, sharey=True)
@@ -1238,6 +1099,13 @@ class TestLinePlotter(Helpers):
             plot_val = getattr(line, f"get_{key}")()
             assert plot_val == val
 
+    def test_nonmapped_dashes(self):
+
+        ax = lineplot(x=[1, 2], y=[1, 2], dashes=(2, 1))
+        line = ax.lines[0]
+        # Not a great test, but lines don't expose the dash style publically
+        assert line.get_linestyle() == "--"
+
     def test_lineplot_axes(self, wide_df):
 
         f1, ax1 = plt.subplots()
@@ -1259,7 +1127,7 @@ class TestLinePlotter(Helpers):
 
         for l1, l2 in zip(lin_lines, rel_lines):
             assert_array_equal(l1.get_xydata(), l2.get_xydata())
-            assert self.colors_equal(l1.get_color(), l2.get_color())
+            assert same_color(l1.get_color(), l2.get_color())
             assert l1.get_linewidth() == l2.get_linewidth()
             assert l1.get_linestyle() == l2.get_linestyle()
 
@@ -1309,7 +1177,7 @@ class TestLinePlotter(Helpers):
         lineplot(x=long_df.x, y="y", data=long_df)
         ax.clear()
 
-        lineplot(x="x", y=long_df.y.values, data=long_df)
+        lineplot(x="x", y=long_df.y.to_numpy(), data=long_df)
         ax.clear()
 
         lineplot(x="x", y="t", data=long_df)
@@ -1351,8 +1219,50 @@ class TestLinePlotter(Helpers):
         lineplot(x="x", y="y", hue="f", size="s", data=object_df)
         ax.clear()
 
+    def test_ci_deprecation(self, long_df):
 
-class TestScatterPlotter(Helpers):
+        axs = plt.figure().subplots(2)
+        lineplot(data=long_df, x="x", y="y", errorbar=("ci", 95), seed=0, ax=axs[0])
+        with pytest.warns(UserWarning, match="The `ci` parameter is deprecated"):
+            lineplot(data=long_df, x="x", y="y", ci=95, seed=0, ax=axs[1])
+        assert_plots_equal(*axs)
+
+        axs = plt.figure().subplots(2)
+        lineplot(data=long_df, x="x", y="y", errorbar="sd", ax=axs[0])
+        with pytest.warns(UserWarning, match="The `ci` parameter is deprecated"):
+            lineplot(data=long_df, x="x", y="y", ci="sd", ax=axs[1])
+        assert_plots_equal(*axs)
+
+
+class TestScatterPlotter(SharedAxesLevelTests, Helpers):
+
+    func = staticmethod(scatterplot)
+
+    def get_last_color(self, ax):
+
+        colors = ax.collections[-1].get_facecolors()
+        unique_colors = np.unique(colors, axis=0)
+        assert len(unique_colors) == 1
+        return to_rgba(unique_colors.squeeze())
+
+    def test_color(self, long_df):
+
+        super().test_color(long_df)
+
+        ax = plt.figure().subplots()
+        self.func(data=long_df, x="x", y="y", facecolor="C5", ax=ax)
+        assert self.get_last_color(ax) == to_rgba("C5")
+
+        ax = plt.figure().subplots()
+        self.func(data=long_df, x="x", y="y", facecolors="C6", ax=ax)
+        assert self.get_last_color(ax) == to_rgba("C6")
+
+        if LooseVersion(mpl.__version__) >= "3.1.0":
+            # https://github.com/matplotlib/matplotlib/pull/12851
+
+            ax = plt.figure().subplots()
+            self.func(data=long_df, x="x", y="y", fc="C4", ax=ax)
+            assert self.get_last_color(ax) == to_rgba("C4")
 
     def test_legend_data(self, long_df):
 
@@ -1386,7 +1296,7 @@ class TestScatterPlotter(Helpers):
         colors = [h.get_facecolors()[0] for h in handles]
         expected_colors = p._hue_map(p._hue_map.levels)
         assert labels == p._hue_map.levels
-        assert self.colors_equal(colors, expected_colors)
+        assert same_color(colors, expected_colors)
 
         # --
 
@@ -1405,7 +1315,7 @@ class TestScatterPlotter(Helpers):
         expected_paths = p._style_map(p._style_map.levels, "path")
         assert labels == p._hue_map.levels
         assert labels == p._style_map.levels
-        assert self.colors_equal(colors, expected_colors)
+        assert same_color(colors, expected_colors)
         assert self.paths_equal(paths, expected_paths)
 
         # --
@@ -1432,7 +1342,7 @@ class TestScatterPlotter(Helpers):
         assert labels == (
             ["a"] + p._hue_map.levels + ["b"] + p._style_map.levels
         )
-        assert self.colors_equal(colors, expected_colors)
+        assert same_color(colors, expected_colors)
         assert self.paths_equal(paths, expected_paths)
 
         # --
@@ -1451,7 +1361,7 @@ class TestScatterPlotter(Helpers):
         expected_sizes = p._size_map(p._size_map.levels)
         assert labels == p._hue_map.levels
         assert labels == p._size_map.levels
-        assert self.colors_equal(colors, expected_colors)
+        assert same_color(colors, expected_colors)
         assert sizes == expected_sizes
 
         # --
@@ -1538,12 +1448,12 @@ class TestScatterPlotter(Helpers):
 
         p.plot(ax, {})
         points = ax.collections[0]
-        assert_array_equal(points.get_offsets(), long_df[["x", "y"]].values)
+        assert_array_equal(points.get_offsets(), long_df[["x", "y"]].to_numpy())
 
         ax.clear()
         p.plot(ax, {"color": "k", "label": "test"})
         points = ax.collections[0]
-        assert self.colors_equal(points.get_facecolor(), "k")
+        assert same_color(points.get_facecolor(), "k")
         assert points.get_label() == "test"
 
         p = _ScatterPlotter(
@@ -1554,7 +1464,7 @@ class TestScatterPlotter(Helpers):
         p.plot(ax, {})
         points = ax.collections[0]
         expected_colors = p._hue_map(p.plot_data["hue"])
-        assert self.colors_equal(points.get_facecolors(), expected_colors)
+        assert same_color(points.get_facecolors(), expected_colors)
 
         p = _ScatterPlotter(
             data=long_df,
@@ -1566,7 +1476,7 @@ class TestScatterPlotter(Helpers):
         color = (1, .3, .8)
         p.plot(ax, {"color": color})
         points = ax.collections[0]
-        assert self.colors_equal(points.get_edgecolors(), [color])
+        assert same_color(points.get_edgecolors(), [color])
 
         p = _ScatterPlotter(
             data=long_df, variables=dict(x="x", y="y", size="a"),
@@ -1586,9 +1496,10 @@ class TestScatterPlotter(Helpers):
 
         ax.clear()
         p.plot(ax, {})
+        points = ax.collections[0]
         expected_colors = p._hue_map(p.plot_data["hue"])
         expected_paths = p._style_map(p.plot_data["style"], "path")
-        assert self.colors_equal(points.get_facecolors(), expected_colors)
+        assert same_color(points.get_facecolors(), expected_colors)
         assert self.paths_equal(points.get_paths(), expected_paths)
 
         p = _ScatterPlotter(
@@ -1599,9 +1510,10 @@ class TestScatterPlotter(Helpers):
 
         ax.clear()
         p.plot(ax, {})
+        points = ax.collections[0]
         expected_colors = p._hue_map(p.plot_data["hue"])
         expected_paths = p._style_map(p.plot_data["style"], "path")
-        assert self.colors_equal(points.get_facecolors(), expected_colors)
+        assert same_color(points.get_facecolors(), expected_colors)
         assert self.paths_equal(points.get_paths(), expected_paths)
 
         x_str = long_df["x"].astype(str)
@@ -1657,6 +1569,30 @@ class TestScatterPlotter(Helpers):
 
         assert_array_equal(points.get_sizes().squeeze(), s)
         assert_array_equal(points.get_facecolors(), c)
+
+    def test_supplied_color_array(self, long_df):
+
+        cmap = mpl.cm.get_cmap("Blues")
+        norm = mpl.colors.Normalize()
+        colors = cmap(norm(long_df["y"].to_numpy()))
+
+        keys = ["c", "facecolor", "facecolors"]
+
+        if LooseVersion(mpl.__version__) >= "3.1.0":
+            # https://github.com/matplotlib/matplotlib/pull/12851
+            keys.append("fc")
+
+        for key in keys:
+
+            ax = plt.figure().subplots()
+            scatterplot(data=long_df, x="x", y="y", **{key: colors})
+            _draw_figure(ax.figure)
+            assert_array_equal(ax.collections[0].get_facecolors(), colors)
+
+        ax = plt.figure().subplots()
+        scatterplot(data=long_df, x="x", y="y", c=long_df["y"], cmap=cmap)
+        _draw_figure(ax.figure)
+        assert_array_equal(ax.collections[0].get_facecolors(), colors)
 
     def test_linewidths(self, long_df):
 
@@ -1755,7 +1691,7 @@ class TestScatterPlotter(Helpers):
         scatterplot(x=long_df.x, y="y", data=long_df)
         ax.clear()
 
-        scatterplot(x="x", y=long_df.y.values, data=long_df)
+        scatterplot(x="x", y=long_df.y.to_numpy(), data=long_df)
         ax.clear()
 
         scatterplot(x="x", y="y", hue="a", data=long_df)

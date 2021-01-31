@@ -96,7 +96,7 @@ release = seaborn.__version__
 exclude_patterns = ['_build', 'docstrings']
 
 # The reST default role (used for this markup: `text`) to use for all documents.
-#default_role = None
+default_role = 'literal'
 
 # If true, '()' will be appended to :func: etc. cross-reference text.
 #add_function_parentheses = True
@@ -131,6 +131,8 @@ html_theme_options = {
     'navbar_title': " ",
     'navbar_sidebarrel': False,
     'bootstrap_version': "3",
+    'nosidebar': True,
+    'body_max_width': '100%',
     'navbar_links': [
         ("Gallery", "examples/index"),
         ("Tutorial", "tutorial"),

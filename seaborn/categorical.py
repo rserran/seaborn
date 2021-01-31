@@ -1,19 +1,31 @@
 from textwrap import dedent
 from numbers import Number
-import colorsys
+import warnings
+from colorsys import rgb_to_hls
+from functools import partial
+
 import numpy as np
-from scipy import stats
 import pandas as pd
+try:
+    from scipy.stats import gaussian_kde
+    _no_scipy = False
+except ImportError:
+    from .external.kde import gaussian_kde
+    _no_scipy = True
+
 import matplotlib as mpl
 from matplotlib.collections import PatchCollection
 import matplotlib.patches as Patches
 import matplotlib.pyplot as plt
-import warnings
-from distutils.version import LooseVersion
 
-from ._core import variable_type, infer_orient, categorical_order
+from ._core import (
+    VectorPlotter,
+    variable_type,
+    infer_orient,
+    categorical_order,
+)
 from . import utils
-from .utils import remove_na
+from .utils import remove_na, _normal_quantile_func, _draw_figure, _default_color
 from .algorithms import bootstrap
 from .palettes import color_palette, husl_palette, light_palette, dark_palette
 from .axisgrid import FacetGrid, _facet_docs
@@ -26,6 +38,340 @@ __all__ = [
     "boxplot", "violinplot", "boxenplot",
     "pointplot", "barplot", "countplot",
 ]
+
+
+class _CategoricalPlotterNew(VectorPlotter):
+
+    semantics = "x", "y", "hue", "units"
+
+    wide_structure = {"x": "@columns", "y": "@values", "hue": "@columns"}
+    flat_structure = {"x": "@index", "y": "@values"}
+
+    def __init__(
+        self,
+        data=None,
+        variables={},
+        order=None,
+        orient=None,
+        require_numeric=False,
+        fixed_scale=True,
+    ):
+
+        super().__init__(data=data, variables=variables)
+
+        # This method takes care of some bookkeeping that is necessary because the
+        # original categorical plots (prior to the 2021 refactor) had some rules that
+        # don't fit exactly into the logic of _core. It may be wise to have a second
+        # round of refactoring that moves the logic deeper, but this will keep things
+        # relatively sensible for now.
+
+        # The concept of an "orientation" is important to the original categorical
+        # plots, but there's no provision for it in _core, so we need to do it here.
+        # Note that it could be useful for the other functions in at least two ways
+        # (orienting a univariate distribution plot from long-form data and selecting
+        # the aggregation axis in lineplot), so we may want to eventually refactor it.
+        self.orient = infer_orient(
+            x=self.plot_data.get("x", None),
+            y=self.plot_data.get("y", None),
+            orient=orient,
+            require_numeric=require_numeric,
+        )
+
+        # Short-circuit in the case of an empty plot
+        if not self.has_xy_data:
+            return
+
+        # For wide data, orient determines assignment to x/y differently from the
+        # wide_structure rules in _core. If we do decide to make orient part of the
+        # _core variable assignment, we'll want to figure out how to express that.
+        if self.input_format == "wide" and self.orient == "h":
+            self.plot_data = self.plot_data.rename(columns={"x": "y", "y": "x"})
+            orig_x, orig_x_type = self.variables["x"], self.var_types["x"]
+            orig_y, orig_y_type = self.variables["y"], self.var_types["y"]
+            self.variables.update({"x": orig_y, "y": orig_x})
+            self.var_types.update({"x": orig_y_type, "y": orig_x_type})
+
+    def _hue_backcompat(self, color, palette, hue_order, force_hue=False):
+        """Implement backwards compatability for hue parametrization.
+
+        Note: the force_hue parameter is used so that functions can be shown to
+        pass existing tests during refactoring and then tested for new behavior.
+        It can be removed after completion of the work.
+
+        """
+        # The original categorical functions applied a palette to the categorical axis
+        # by default. We want to require an explicit hue mapping, to be more consistent
+        # with how things work elsewhere now. I don't think there's any good way to
+        # do this gently -- because it's triggered by the default value of hue=None,
+        # users would always get a warning, unless we introduce some sentinel "default"
+        # argument for this change. That's possible, but asking users to set `hue=None`
+        # on every call is annoying.
+        # We are keeping the logic for implementing the old behavior in with the current
+        # system so that (a) we can punt on that decision and (b) we can ensure that
+        # refactored code passes old tests.
+        default_behavior = color is None or palette is not None
+        if force_hue and "hue" not in self.variables and default_behavior:
+            self._redundant_hue = True
+            self.plot_data["hue"] = self.plot_data[self.cat_axis]
+            self.variables["hue"] = self.variables[self.cat_axis]
+            self.var_types["hue"] = "categorical"
+            hue_order = self.var_levels[self.cat_axis]
+
+            # Because we convert the categorical axis variable to string,
+            # we need to update a dictionary palette too
+            if isinstance(palette, dict):
+                palette = {str(k): v for k, v in palette.items()}
+
+        else:
+            self._redundant_hue = False
+
+        # Previously, categorical plots had a trick where color= could seed the palette.
+        # Because that's an explicit parameterization, we are going to give it one
+        # release cycle with a warning before removing.
+        if "hue" in self.variables and palette is None and color is not None:
+            if not isinstance(color, str):
+                color = mpl.colors.to_hex(color)
+            palette = f"dark:{color}"
+            msg = (
+                "Setting a gradient palette using color= is deprecated and will be "
+                f"removed in version 0.13. Set `palette='{palette}'` for same effect."
+            )
+            warnings.warn(msg, FutureWarning)
+
+        return palette, hue_order
+
+    @property
+    def cat_axis(self):
+        return {"v": "x", "h": "y"}[self.orient]
+
+    def _get_gray(self, colors):
+        """Get a grayscale value that looks good with color."""
+        if not len(colors):
+            return None
+        unique_colors = np.unique(colors, axis=0)
+        light_vals = [rgb_to_hls(*rgb[:3])[1] for rgb in unique_colors]
+        lum = min(light_vals) * .6
+        return (lum, lum, lum)
+
+    def _adjust_cat_axis(self, ax, axis):
+        """Set ticks and limits for a categorical variable."""
+        # Note: in theory, this could happen in _attach for all categorical axes
+        # But two reasons not to do that:
+        # - If it happens before plotting, autoscaling messes up the plot limits
+        # - It would change existing plots from other seaborn functions
+        if self.var_types[axis] != "categorical":
+            return
+
+        data = self.plot_data[axis]
+        if self.facets is not None:
+            share_group = getattr(ax, f"get_shared_{axis}_axes")()
+            shared_axes = [getattr(ax, f"{axis}axis")] + [
+                getattr(other_ax, f"{axis}axis")
+                for other_ax in self.facets.axes.flat
+                if share_group.joined(ax, other_ax)
+            ]
+            data = data[self.converters[axis].isin(shared_axes)]
+
+        if self._var_ordered[axis]:
+            order = categorical_order(data, self.var_levels[axis])
+        else:
+            order = categorical_order(data)
+
+        n = max(len(order), 1)
+
+        if axis == "x":
+            ax.xaxis.grid(False)
+            ax.set_xlim(-.5, n - .5, auto=None)
+        else:
+            ax.yaxis.grid(False)
+            # Note limits that correspond to previously-inverted y axis
+            ax.set_ylim(n - .5, -.5, auto=None)
+
+    @property
+    def _native_width(self):
+        """Return unit of width separating categories on native numeric scale."""
+        unique_values = np.unique(self.comp_data[self.cat_axis])
+        if len(unique_values) > 1:
+            native_width = np.nanmin(np.diff(unique_values))
+        else:
+            native_width = 1
+        return native_width
+
+    def _nested_offsets(self, width, dodge):
+        """Return offsets for each hue level for dodged plots."""
+        offsets = None
+        if "hue" in self.variables:
+            n_levels = len(self._hue_map.levels)
+            if dodge:
+                each_width = width / n_levels
+                offsets = np.linspace(0, width - each_width, n_levels)
+                offsets -= offsets.mean()
+            else:
+                offsets = np.zeros(n_levels)
+        return offsets
+
+    # Note that the plotting methods here aim (in most cases) to produce the exact same
+    # artists as the original version of the code, so there is some weirdness that might
+    # not otherwise be clean or make sense in this context, such as adding empty artists
+    # for combinations of variables with no observations
+
+    def plot_strips(
+        self,
+        jitter,
+        dodge,
+        color,
+        edgecolor,
+        plot_kws,
+    ):
+
+        width = .8 * self._native_width
+        offsets = self._nested_offsets(width, dodge)
+
+        if jitter is True:
+            jlim = 0.1
+        else:
+            jlim = float(jitter)
+        if "hue" in self.variables and dodge:
+            jlim /= len(self._hue_map.levels)
+        jlim *= self._native_width
+        jitterer = partial(np.random.uniform, low=-jlim, high=+jlim)
+
+        iter_vars = [self.cat_axis]
+        if dodge:
+            iter_vars.append("hue")
+
+        ax = self.ax
+        dodge_move = jitter_move = 0
+
+        for sub_vars, sub_data in self.iter_data(iter_vars,
+                                                 from_comp_data=True,
+                                                 allow_empty=True):
+
+            if offsets is not None:
+                dodge_move = offsets[sub_data["hue"].map(self._hue_map.levels.index)]
+
+            jitter_move = jitterer(size=len(sub_data)) if len(sub_data) > 1 else 0
+
+            adjusted_data = sub_data[self.cat_axis] + dodge_move + jitter_move
+            sub_data.loc[:, self.cat_axis] = adjusted_data
+
+            for var in "xy":
+                if self._log_scaled(var):
+                    sub_data[var] = np.power(10, sub_data[var])
+
+            ax = self._get_axes(sub_vars)
+            points = ax.scatter(sub_data["x"], sub_data["y"], color=color, **plot_kws)
+
+            if "hue" in self.variables:
+                points.set_facecolors(self._hue_map(sub_data["hue"]))
+
+            if edgecolor == "gray":  # XXX TODO change to "auto"
+                points.set_edgecolors(self._get_gray(points.get_facecolors()))
+            else:
+                points.set_edgecolors(edgecolor)
+
+        # TODO XXX fully impelement legend
+        show_legend = not self._redundant_hue and self.input_format != "wide"
+        if "hue" in self.variables and show_legend:
+            for level in self._hue_map.levels:
+                color = self._hue_map(level)
+                ax.scatter([], [], s=60, color=mpl.colors.rgb2hex(color), label=level)
+            ax.legend(loc="best", title=self.variables["hue"])
+
+    def plot_swarms(
+        self,
+        dodge,
+        color,
+        edgecolor,
+        warn_thresh,
+        plot_kws,
+    ):
+
+        width = .8 * self._native_width
+        offsets = self._nested_offsets(width, dodge)
+
+        iter_vars = [self.cat_axis]
+        if dodge:
+            iter_vars.append("hue")
+
+        ax = self.ax
+        point_collections = {}
+        dodge_move = 0
+
+        for sub_vars, sub_data in self.iter_data(iter_vars,
+                                                 from_comp_data=True,
+                                                 allow_empty=True):
+
+            if offsets is not None:
+                dodge_move = offsets[sub_data["hue"].map(self._hue_map.levels.index)]
+
+            if not sub_data.empty:
+                sub_data.loc[:, self.cat_axis] = sub_data[self.cat_axis] + dodge_move
+
+            for var in "xy":
+                if self._log_scaled(var):
+                    sub_data[var] = np.power(10, sub_data[var])
+
+            ax = self._get_axes(sub_vars)
+            points = ax.scatter(sub_data["x"], sub_data["y"], color=color, **plot_kws)
+
+            if "hue" in self.variables:
+                points.set_facecolors(self._hue_map(sub_data["hue"]))
+
+            if edgecolor == "gray":  # XXX TODO change to "auto"
+                points.set_edgecolors(self._get_gray(points.get_facecolors()))
+            else:
+                points.set_edgecolors(edgecolor)
+
+            if not sub_data.empty:
+                point_collections[sub_data[self.cat_axis].iloc[0]] = points
+
+        beeswarm = Beeswarm(
+            width=width, orient=self.orient, warn_thresh=warn_thresh,
+        )
+        for center, points in point_collections.items():
+            if points.get_offsets().shape[0] > 1:
+
+                def draw(points, renderer, *, center=center):
+
+                    beeswarm(points, center)
+
+                    ax = points.axes
+                    if self.orient == "h":
+                        scalex = False
+                        scaley = ax.get_autoscaley_on()
+                    else:
+                        scalex = ax.get_autoscalex_on()
+                        scaley = False
+
+                    # This prevents us from undoing the nice categorical axis limits
+                    # set in _adjust_cat_axis, because that method currently leave
+                    # the autoscale flag in its original setting. It may be better
+                    # to disable autoscaling there to avoid needing to do this.
+                    fixed_scale = self.var_types[self.cat_axis] == "categorical"
+
+                    ax.update_datalim(points.get_datalim(ax.transData))
+                    if not fixed_scale and (scalex or scaley):
+                        ax.autoscale_view(scalex=scalex, scaley=scaley)
+
+                    super(points.__class__, points).draw(renderer)
+
+                points.draw = draw.__get__(points)
+
+        _draw_figure(ax.figure)
+
+        # TODO XXX fully impelment legend
+        show_legend = not self._redundant_hue and self.input_format != "wide"
+        if "hue" in self.variables and show_legend:  # TODO and legend:
+            for level in self._hue_map.levels:
+                color = self._hue_map(level)
+                ax.scatter([], [], s=60, color=mpl.colors.rgb2hex(color), label=level)
+            ax.legend(loc="best", title=self.variables["hue"])
+
+
+class _CategoricalFacetPlotter(_CategoricalPlotterNew):
+
+    semantics = _CategoricalPlotterNew.semantics + ("col", "row")
 
 
 class _CategoricalPlotter(object):
@@ -315,7 +661,7 @@ class _CategoricalPlotter(object):
         rgb_colors = color_palette(colors)
 
         # Determine the gray color to use for the lines framing the plot
-        light_vals = [colorsys.rgb_to_hls(*c)[1] for c in rgb_colors]
+        light_vals = [rgb_to_hls(*c)[1] for c in rgb_colors]
         lum = min(light_vals) * .6
         gray = mpl.colors.rgb2hex((lum, lum, lum))
 
@@ -376,16 +722,7 @@ class _CategoricalPlotter(object):
             ax.set_ylim(-.5, len(self.plot_data) - .5, auto=None)
 
         if self.hue_names is not None:
-            leg = ax.legend(loc="best", title=self.hue_title)
-            if self.hue_title is not None:
-                if LooseVersion(mpl.__version__) < "3.0":
-                    # Old Matplotlib has no legend title size rcparam
-                    try:
-                        title_size = mpl.rcParams["axes.labelsize"] * .85
-                    except TypeError:  # labelsize is something like "large"
-                        title_size = mpl.rcParams["axes.labelsize"]
-                    prop = mpl.font_manager.FontProperties(size=title_size)
-                    leg.set_title(self.hue_title, prop=prop)
+            ax.legend(loc="best", title=self.hue_title)
 
     def add_legend_data(self, ax, color, label):
         """Add a dummy patch object so we can get legend data."""
@@ -672,7 +1009,7 @@ class _ViolinPlotter(_CategoricalPlotter):
 
     def fit_kde(self, x, bw):
         """Estimate a KDE for a vector of data with flexible bandwidth."""
-        kde = stats.gaussian_kde(x, bw)
+        kde = gaussian_kde(x, bw)
 
         # Extract the numeric bandwidth from the KDE object
         bw_used = kde.factor
@@ -952,7 +1289,7 @@ class _ViolinPlotter(_CategoricalPlotter):
         """Draw boxplot information at center of the density."""
         # Compute the boxplot statistics
         q25, q50, q75 = np.percentile(data, [25, 50, 75])
-        whisker_lim = 1.5 * stats.iqr(data)
+        whisker_lim = 1.5 * (q75 - q25)
         h1 = np.min(data[data >= (q25 - whisker_lim)])
         h2 = np.max(data[data <= (q75 + whisker_lim)])
 
@@ -1041,384 +1378,6 @@ class _ViolinPlotter(_CategoricalPlotter):
     def plot(self, ax):
         """Make the violin plot."""
         self.draw_violins(ax)
-        self.annotate_axes(ax)
-        if self.orient == "h":
-            ax.invert_yaxis()
-
-
-class _CategoricalScatterPlotter(_CategoricalPlotter):
-
-    default_palette = "dark"
-    require_numeric = False
-
-    @property
-    def point_colors(self):
-        """Return an index into the palette for each scatter point."""
-        point_colors = []
-        for i, group_data in enumerate(self.plot_data):
-
-            # Initialize the array for this group level
-            group_colors = np.empty(group_data.size, int)
-            if isinstance(group_data, pd.Series):
-                group_colors = pd.Series(group_colors, group_data.index)
-
-            if self.plot_hues is None:
-
-                # Use the same color for all points at this level
-                # group_color = self.colors[i]
-                group_colors[:] = i
-
-            else:
-
-                # Color the points based on  the hue level
-
-                for j, level in enumerate(self.hue_names):
-                    # hue_color = self.colors[j]
-                    if group_data.size:
-                        group_colors[self.plot_hues[i] == level] = j
-
-            point_colors.append(group_colors)
-
-        return point_colors
-
-    def add_legend_data(self, ax):
-        """Add empty scatterplot artists with labels for the legend."""
-        if self.hue_names is not None:
-            for rgb, label in zip(self.colors, self.hue_names):
-                ax.scatter([], [],
-                           color=mpl.colors.rgb2hex(rgb),
-                           label=label,
-                           s=60)
-
-
-class _StripPlotter(_CategoricalScatterPlotter):
-    """1-d scatterplot with categorical organization."""
-    def __init__(self, x, y, hue, data, order, hue_order,
-                 jitter, dodge, orient, color, palette):
-        """Initialize the plotter."""
-        self.establish_variables(x, y, hue, data, orient, order, hue_order)
-        self.establish_colors(color, palette, 1)
-
-        # Set object attributes
-        self.dodge = dodge
-        self.width = .8
-
-        if jitter == 1:  # Use a good default for `jitter = True`
-            jlim = 0.1
-        else:
-            jlim = float(jitter)
-        if self.hue_names is not None and dodge:
-            jlim /= len(self.hue_names)
-        self.jitterer = stats.uniform(-jlim, jlim * 2).rvs
-
-    def draw_stripplot(self, ax, kws):
-        """Draw the points onto `ax`."""
-        palette = np.asarray(self.colors)
-        for i, group_data in enumerate(self.plot_data):
-            if self.plot_hues is None or not self.dodge:
-
-                if self.hue_names is None:
-                    hue_mask = np.ones(group_data.size, bool)
-                else:
-                    hue_mask = np.array([h in self.hue_names
-                                         for h in self.plot_hues[i]], bool)
-                    # Broken on older numpys
-                    # hue_mask = np.in1d(self.plot_hues[i], self.hue_names)
-
-                strip_data = group_data[hue_mask]
-                point_colors = np.asarray(self.point_colors[i][hue_mask])
-
-                # Plot the points in centered positions
-                cat_pos = np.ones(strip_data.size) * i
-                cat_pos += self.jitterer(len(strip_data))
-                kws.update(c=palette[point_colors])
-                if self.orient == "v":
-                    ax.scatter(cat_pos, strip_data, **kws)
-                else:
-                    ax.scatter(strip_data, cat_pos, **kws)
-
-            else:
-                offsets = self.hue_offsets
-                for j, hue_level in enumerate(self.hue_names):
-                    hue_mask = self.plot_hues[i] == hue_level
-                    strip_data = group_data[hue_mask]
-
-                    point_colors = np.asarray(self.point_colors[i][hue_mask])
-
-                    # Plot the points in centered positions
-                    center = i + offsets[j]
-                    cat_pos = np.ones(strip_data.size) * center
-                    cat_pos += self.jitterer(len(strip_data))
-                    kws.update(c=palette[point_colors])
-                    if self.orient == "v":
-                        ax.scatter(cat_pos, strip_data, **kws)
-                    else:
-                        ax.scatter(strip_data, cat_pos, **kws)
-
-    def plot(self, ax, kws):
-        """Make the plot."""
-        self.draw_stripplot(ax, kws)
-        self.add_legend_data(ax)
-        self.annotate_axes(ax)
-        if self.orient == "h":
-            ax.invert_yaxis()
-
-
-class _SwarmPlotter(_CategoricalScatterPlotter):
-
-    def __init__(self, x, y, hue, data, order, hue_order,
-                 dodge, orient, color, palette):
-        """Initialize the plotter."""
-        self.establish_variables(x, y, hue, data, orient, order, hue_order)
-        self.establish_colors(color, palette, 1)
-
-        # Set object attributes
-        self.dodge = dodge
-        self.width = .8
-
-    def could_overlap(self, xy_i, swarm, d):
-        """Return a list of all swarm points that could overlap with target.
-
-        Assumes that swarm is a sorted list of all points below xy_i.
-        """
-        _, y_i = xy_i
-        neighbors = []
-        for xy_j in reversed(swarm):
-            _, y_j = xy_j
-            if (y_i - y_j) < d:
-                neighbors.append(xy_j)
-            else:
-                break
-        return np.array(list(reversed(neighbors)))
-
-    def position_candidates(self, xy_i, neighbors, d):
-        """Return a list of (x, y) coordinates that might be valid."""
-        candidates = [xy_i]
-        x_i, y_i = xy_i
-        left_first = True
-        for x_j, y_j in neighbors:
-            dy = y_i - y_j
-            dx = np.sqrt(max(d ** 2 - dy ** 2, 0)) * 1.05
-            cl, cr = (x_j - dx, y_i), (x_j + dx, y_i)
-            if left_first:
-                new_candidates = [cl, cr]
-            else:
-                new_candidates = [cr, cl]
-            candidates.extend(new_candidates)
-            left_first = not left_first
-        return np.array(candidates)
-
-    def first_non_overlapping_candidate(self, candidates, neighbors, d):
-        """Remove candidates from the list if they overlap with the swarm."""
-
-        # IF we have no neighbours, all candidates are good.
-        if len(neighbors) == 0:
-            return candidates[0]
-
-        neighbors_x = neighbors[:, 0]
-        neighbors_y = neighbors[:, 1]
-
-        d_square = d ** 2
-
-        for xy_i in candidates:
-            x_i, y_i = xy_i
-
-            dx = neighbors_x - x_i
-            dy = neighbors_y - y_i
-
-            sq_distances = np.power(dx, 2.0) + np.power(dy, 2.0)
-
-            # good candidate does not overlap any of neighbors
-            # which means that squared distance between candidate
-            # and any of the neighbours has to be at least
-            # square of the diameter
-            good_candidate = np.all(sq_distances >= d_square)
-
-            if good_candidate:
-                return xy_i
-
-        # If `position_candidates` works well
-        # this should never happen
-        raise Exception('No non-overlapping candidates found. '
-                        'This should not happen.')
-
-    def beeswarm(self, orig_xy, d):
-        """Adjust x position of points to avoid overlaps."""
-        # In this method, ``x`` is always the categorical axis
-        # Center of the swarm, in point coordinates
-        midline = orig_xy[0, 0]
-
-        # Start the swarm with the first point
-        swarm = [orig_xy[0]]
-
-        # Loop over the remaining points
-        for xy_i in orig_xy[1:]:
-
-            # Find the points in the swarm that could possibly
-            # overlap with the point we are currently placing
-            neighbors = self.could_overlap(xy_i, swarm, d)
-
-            # Find positions that would be valid individually
-            # with respect to each of the swarm neighbors
-            candidates = self.position_candidates(xy_i, neighbors, d)
-
-            # Sort candidates by their centrality
-            offsets = np.abs(candidates[:, 0] - midline)
-            candidates = candidates[np.argsort(offsets)]
-
-            # Find the first candidate that does not overlap any neighbours
-            new_xy_i = self.first_non_overlapping_candidate(candidates,
-                                                            neighbors, d)
-
-            # Place it into the swarm
-            swarm.append(new_xy_i)
-
-        return np.array(swarm)
-
-    def add_gutters(self, points, center, width):
-        """Stop points from extending beyond their territory."""
-        half_width = width / 2
-        low_gutter = center - half_width
-        off_low = points < low_gutter
-        if off_low.any():
-            points[off_low] = low_gutter
-        high_gutter = center + half_width
-        off_high = points > high_gutter
-        if off_high.any():
-            points[off_high] = high_gutter
-
-        gutter_prop = (off_high + off_low).sum() / len(points)
-        if gutter_prop > .05:
-            msg = (
-                "{:.1%} of the points cannot be placed; you may want "
-                "to decrease the size of the markers or use stripplot."
-            ).format(gutter_prop)
-            warnings.warn(msg, UserWarning)
-
-        return points
-
-    def swarm_points(self, ax, points, center, width, s, **kws):
-        """Find new positions on the categorical axis for each point."""
-        # Convert from point size (area) to diameter
-        default_lw = mpl.rcParams["patch.linewidth"]
-        lw = kws.get("linewidth", kws.get("lw", default_lw))
-        dpi = ax.figure.dpi
-        d = (np.sqrt(s) + lw) * (dpi / 72)
-
-        # Transform the data coordinates to point coordinates.
-        # We'll figure out the swarm positions in the latter
-        # and then convert back to data coordinates and replot
-        orig_xy = ax.transData.transform(points.get_offsets())
-
-        # Order the variables so that x is the categorical axis
-        if self.orient == "h":
-            orig_xy = orig_xy[:, [1, 0]]
-
-        # Do the beeswarm in point coordinates
-        new_xy = self.beeswarm(orig_xy, d)
-
-        # Transform the point coordinates back to data coordinates
-        if self.orient == "h":
-            new_xy = new_xy[:, [1, 0]]
-        new_x, new_y = ax.transData.inverted().transform(new_xy).T
-
-        # Add gutters
-        if self.orient == "v":
-            self.add_gutters(new_x, center, width)
-        else:
-            self.add_gutters(new_y, center, width)
-
-        # Reposition the points so they do not overlap
-        points.set_offsets(np.c_[new_x, new_y])
-
-    def draw_swarmplot(self, ax, kws):
-        """Plot the data."""
-        s = kws.pop("s")
-
-        centers = []
-        swarms = []
-
-        palette = np.asarray(self.colors)
-
-        # Set the categorical axes limits here for the swarm math
-        if self.orient == "v":
-            ax.set_xlim(-.5, len(self.plot_data) - .5)
-        else:
-            ax.set_ylim(-.5, len(self.plot_data) - .5)
-
-        # Plot each swarm
-        for i, group_data in enumerate(self.plot_data):
-
-            if self.plot_hues is None or not self.dodge:
-
-                width = self.width
-
-                if self.hue_names is None:
-                    hue_mask = np.ones(group_data.size, bool)
-                else:
-                    hue_mask = np.array([h in self.hue_names
-                                         for h in self.plot_hues[i]], bool)
-                    # Broken on older numpys
-                    # hue_mask = np.in1d(self.plot_hues[i], self.hue_names)
-
-                swarm_data = np.asarray(group_data[hue_mask])
-                point_colors = np.asarray(self.point_colors[i][hue_mask])
-
-                # Sort the points for the beeswarm algorithm
-                sorter = np.argsort(swarm_data)
-                swarm_data = swarm_data[sorter]
-                point_colors = point_colors[sorter]
-
-                # Plot the points in centered positions
-                cat_pos = np.ones(swarm_data.size) * i
-                kws.update(c=palette[point_colors])
-                if self.orient == "v":
-                    points = ax.scatter(cat_pos, swarm_data, s=s, **kws)
-                else:
-                    points = ax.scatter(swarm_data, cat_pos, s=s, **kws)
-
-                centers.append(i)
-                swarms.append(points)
-
-            else:
-                offsets = self.hue_offsets
-                width = self.nested_width
-
-                for j, hue_level in enumerate(self.hue_names):
-                    hue_mask = self.plot_hues[i] == hue_level
-                    swarm_data = np.asarray(group_data[hue_mask])
-                    point_colors = np.asarray(self.point_colors[i][hue_mask])
-
-                    # Sort the points for the beeswarm algorithm
-                    sorter = np.argsort(swarm_data)
-                    swarm_data = swarm_data[sorter]
-                    point_colors = point_colors[sorter]
-
-                    # Plot the points in centered positions
-                    center = i + offsets[j]
-                    cat_pos = np.ones(swarm_data.size) * center
-                    kws.update(c=palette[point_colors])
-                    if self.orient == "v":
-                        points = ax.scatter(cat_pos, swarm_data, s=s, **kws)
-                    else:
-                        points = ax.scatter(swarm_data, cat_pos, s=s, **kws)
-
-                    centers.append(center)
-                    swarms.append(points)
-
-        # Autoscale the valus axis to set the data/axes transforms properly
-        ax.autoscale_view(scalex=self.orient == "h", scaley=self.orient == "v")
-
-        # Update the position of each point on the categorical axis
-        # Do this after plotting so that the numerical axis limits are correct
-        for center, swarm in zip(centers, swarms):
-            if swarm.get_offsets().size:
-                self.swarm_points(ax, swarm, center, width, s, **kws)
-
-    def plot(self, ax, kws):
-        """Make the full plot."""
-        self.draw_swarmplot(ax, kws)
-        self.add_legend_data(ax)
         self.annotate_axes(ax)
         if self.orient == "h":
             ax.invert_yaxis()
@@ -1813,7 +1772,6 @@ class _LVPlotter(_CategoricalPlotter):
             raise ValueError(msg)
         self.k_depth = k_depth
 
-        # TODO seems this member is only used to frame the legend artists
         if linewidth is None:
             linewidth = mpl.rcParams["lines.linewidth"]
         self.linewidth = linewidth
@@ -1843,7 +1801,10 @@ class _LVPlotter(_CategoricalPlotter):
         """Get the number of data points and calculate `depth` of
         letter-value plot."""
         vals = np.asarray(vals)
-        vals = vals[np.isfinite(vals)]
+        # Remove infinite values while handling a 'object' dtype
+        # that can come from pd.Float64Dtype() input
+        with pd.option_context('mode.use_inf_as_null', True):
+            vals = vals[~pd.isnull(vals)]
         n = len(vals)
         p = self.outlier_prop
 
@@ -1857,7 +1818,7 @@ class _LVPlotter(_CategoricalPlotter):
         elif self.k_depth == 'proportion':
             k = int(np.log2(n)) - int(np.log2(n * p)) + 1
         elif self.k_depth == 'trustworthy':
-            point_conf = 2 * stats.norm.ppf((1 - self.trust_alpha / 2)) ** 2
+            point_conf = 2 * _normal_quantile_func((1 - self.trust_alpha / 2)) ** 2
             k = int(np.log2(n / point_conf)) + 1
         else:
             k = int(self.k_depth)  # allow having k as input
@@ -1900,7 +1861,9 @@ class _LVPlotter(_CategoricalPlotter):
 
         # If we only have one data point, plot a line
         if len(box_data) == 1:
-            kws.update({'color': self.gray, 'linestyle': '-'})
+            kws.update({
+                'color': self.gray, 'linestyle': '-', 'linewidth': self.linewidth
+            })
             ys = [box_data[0], box_data[0]]
             xs = [x - widths / 2, x + widths / 2]
             if vert:
@@ -1966,8 +1929,15 @@ class _LVPlotter(_CategoricalPlotter):
                      for i, b in enumerate(zip(box_ends, w_area))]
 
             # Plot the medians
-            ax.plot(xs_median, ys_median, c='.15', alpha=.45,
-                    solid_capstyle="butt", **kws)
+            ax.plot(
+                xs_median,
+                ys_median,
+                c=".15",
+                alpha=0.45,
+                solid_capstyle="butt",
+                linewidth=self.linewidth,
+                **kws
+            )
 
             # Plot outliers (if any)
             if len(outliers) > 0:
@@ -1980,7 +1950,9 @@ class _LVPlotter(_CategoricalPlotter):
             # Make sure that the last boxes contain hue and are not pure white
             rgb = [hex_color, cmap(.85)]
             cmap = mpl.colors.LinearSegmentedColormap.from_list('new_map', rgb)
-            collection = PatchCollection(boxes, cmap=cmap, edgecolor=self.gray)
+            collection = PatchCollection(
+                boxes, cmap=cmap, edgecolor=self.gray, linewidth=self.linewidth
+            )
 
             # Set the color gradation, first box will have color=hex_color
             collection.set_array(np.array(np.linspace(1, 0, len(boxes))))
@@ -2127,7 +2099,7 @@ _categorical_docs = dict(
     orient : "v" | "h", optional
         Orientation of the plot (vertical or horizontal). This is usually
         inferred based on the type of the input variables, but it can be used
-        to resolve ambiguitiy when both `x` and `y` are numeric or when
+        to resolve ambiguity when both `x` and `y` are numeric or when
         plotting wide-form data.\
     """),
     color=dedent("""\
@@ -2268,9 +2240,9 @@ boxplot.__doc__ = dedent("""\
         Size of the markers used to indicate outlier observations.
     {linewidth}
     whis : float, optional
-        Proportion of the IQR past the low and high quartiles to extend the
-        plot whiskers. Points outside this range will be identified as
-        outliers.
+        Maximum length of the plot whiskers as proportion of the
+        interquartile range. Whiskers extend to the furthest datapoint
+        within that range. More extreme points are marked as outliers.
     {ax_in}
     kwargs : key, value mappings
         Other keyword arguments are passed through to
@@ -2783,30 +2755,59 @@ def stripplot(
     order=None, hue_order=None,
     jitter=True, dodge=False, orient=None, color=None, palette=None,
     size=5, edgecolor="gray", linewidth=0, ax=None,
+    hue_norm=None, fixed_scale=True, formatter=None,
     **kwargs
 ):
 
-    if "split" in kwargs:
-        dodge = kwargs.pop("split")
-        msg = "The `split` parameter has been renamed to `dodge`."
-        warnings.warn(msg, UserWarning)
+    # XXX we need to add a legend= param!!!
 
-    plotter = _StripPlotter(x, y, hue, data, order, hue_order,
-                            jitter, dodge, orient, color, palette)
+    p = _CategoricalPlotterNew(
+        data=data,
+        variables=_CategoricalPlotterNew.get_semantics(locals()),
+        order=order,
+        orient=orient,
+        require_numeric=False,
+        fixed_scale=fixed_scale,
+    )
+
     if ax is None:
         ax = plt.gca()
 
+    if fixed_scale or p.var_types[p.cat_axis] == "categorical":
+        p.scale_categorical(p.cat_axis, order=order, formatter=formatter)
+
+    p._attach(ax)
+
+    palette, hue_order = p._hue_backcompat(color, palette, hue_order)
+
+    color = _default_color(ax.scatter, hue, color, kwargs)
+
+    p.map_hue(palette=palette, order=hue_order, norm=hue_norm)
+
+    # XXX Copying possibly bad default decisions from original code for now
     kwargs.setdefault("zorder", 3)
     size = kwargs.get("s", size)
-    if linewidth is None:
-        linewidth = size / 10
-    if edgecolor == "gray":
-        edgecolor = plotter.gray
-    kwargs.update(dict(s=size ** 2,
-                       edgecolor=edgecolor,
-                       linewidth=linewidth))
 
-    plotter.plot(ax, kwargs)
+    kwargs.update(dict(
+        s=size ** 2,
+        edgecolor=edgecolor,
+        linewidth=linewidth)
+    )
+
+    p.plot_strips(
+        jitter=jitter,
+        dodge=dodge,
+        color=color,
+        edgecolor=edgecolor,
+        plot_kws=kwargs,
+    )
+
+    # XXX this happens inside a plotting method in the distribution plots
+    # but maybe it's better out here? Alternatively, we have an open issue
+    # suggesting that _attach could add default axes labels, which seems smart.
+    p._add_axis_labels(ax)
+    p._adjust_cat_axis(ax, axis=p.cat_axis)
+
     return ax
 
 
@@ -2866,108 +2867,7 @@ stripplot.__doc__ = dedent("""\
     Examples
     --------
 
-    Draw a single horizontal strip plot:
-
-    .. plot::
-        :context: close-figs
-
-        >>> import seaborn as sns
-        >>> sns.set_theme(style="whitegrid")
-        >>> tips = sns.load_dataset("tips")
-        >>> ax = sns.stripplot(x=tips["total_bill"])
-
-    Group the strips by a categorical variable:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.stripplot(x="day", y="total_bill", data=tips)
-
-    Use a smaller amount of jitter:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.stripplot(x="day", y="total_bill", data=tips, jitter=0.05)
-
-    Draw horizontal strips:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.stripplot(x="total_bill", y="day", data=tips)
-
-    Draw outlines around the points:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.stripplot(x="total_bill", y="day", data=tips,
-        ...                    linewidth=1)
-
-    Nest the strips within a second categorical variable:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.stripplot(x="sex", y="total_bill", hue="day", data=tips)
-
-    Draw each level of the ``hue`` variable at different locations on the
-    major categorical axis:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.stripplot(x="day", y="total_bill", hue="smoker",
-        ...                    data=tips, palette="Set2", dodge=True)
-
-    Control strip order by passing an explicit order:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.stripplot(x="time", y="tip", data=tips,
-        ...                    order=["Dinner", "Lunch"])
-
-    Draw strips with large points and different aesthetics:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax =  sns.stripplot(x="day", y="total_bill", hue="smoker",
-        ...                    data=tips, palette="Set2", size=20, marker="D",
-        ...                    edgecolor="gray", alpha=.25)
-
-    Draw strips of observations on top of a box plot:
-
-    .. plot::
-        :context: close-figs
-
-        >>> import numpy as np
-        >>> ax = sns.boxplot(x="tip", y="day", data=tips, whis=np.inf)
-        >>> ax = sns.stripplot(x="tip", y="day", data=tips, color=".3")
-
-    Draw strips of observations on top of a violin plot:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.violinplot(x="day", y="total_bill", data=tips,
-        ...                     inner=None, color=".8")
-        >>> ax = sns.stripplot(x="day", y="total_bill", data=tips)
-
-    Use :func:`catplot` to combine a :func:`stripplot` and a
-    :class:`FacetGrid`. This allows grouping within additional categorical
-    variables. Using :func:`catplot` is safer than using :class:`FacetGrid`
-    directly, as it ensures synchronization of variable order across facets:
-
-    .. plot::
-        :context: close-figs
-
-        >>> g = sns.catplot(x="sex", y="total_bill",
-        ...                 hue="smoker", col="time",
-        ...                 data=tips, kind="strip",
-        ...                 height=4, aspect=.7);
+    .. include:: ../docstrings/stripplot.rst
 
     """).format(**_categorical_docs)
 
@@ -2980,30 +2880,62 @@ def swarmplot(
     order=None, hue_order=None,
     dodge=False, orient=None, color=None, palette=None,
     size=5, edgecolor="gray", linewidth=0, ax=None,
+    hue_norm=None, fixed_scale=True, formatter=None, warn_thresh=.05,
     **kwargs
 ):
 
-    if "split" in kwargs:
-        dodge = kwargs.pop("split")
-        msg = "The `split` parameter has been renamed to `dodge`."
-        warnings.warn(msg, UserWarning)
+    p = _CategoricalPlotterNew(
+        data=data,
+        variables=_CategoricalPlotterNew.get_semantics(locals()),
+        order=order,
+        orient=orient,
+        require_numeric=False,
+        fixed_scale=fixed_scale,
+    )
 
-    plotter = _SwarmPlotter(x, y, hue, data, order, hue_order,
-                            dodge, orient, color, palette)
     if ax is None:
         ax = plt.gca()
 
+    if fixed_scale or p.var_types[p.cat_axis] == "categorical":
+        p.scale_categorical(p.cat_axis, order=order, formatter=formatter)
+
+    p._attach(ax)
+
+    if not p.has_xy_data:
+        return ax
+
+    palette, hue_order = p._hue_backcompat(color, palette, hue_order)
+
+    color = _default_color(ax.scatter, hue, color, kwargs)
+
+    p.map_hue(palette=palette, order=hue_order, norm=hue_norm)
+
+    # XXX Copying possibly bad default decisions from original code for now
     kwargs.setdefault("zorder", 3)
     size = kwargs.get("s", size)
+
     if linewidth is None:
         linewidth = size / 10
-    if edgecolor == "gray":
-        edgecolor = plotter.gray
-    kwargs.update(dict(s=size ** 2,
-                       edgecolor=edgecolor,
-                       linewidth=linewidth))
 
-    plotter.plot(ax, kwargs)
+    kwargs.update(dict(
+        s=size ** 2,
+        linewidth=linewidth,
+    ))
+
+    p.plot_swarms(
+        dodge=dodge,
+        color=color,
+        edgecolor=edgecolor,
+        warn_thresh=warn_thresh,
+        plot_kws=kwargs,
+    )
+
+    # XXX this happens inside a plotting method in the distribution plots
+    # but maybe it's better out here? Alternatively, we have an open issue
+    # suggesting that _attach could add default axes labels, which seems smart.
+    p._add_axis_labels(ax)
+    p._adjust_cat_axis(ax, axis=p.cat_axis)
+
     return ax
 
 
@@ -3066,89 +2998,7 @@ swarmplot.__doc__ = dedent("""\
     Examples
     --------
 
-    Draw a single horizontal swarm plot:
-
-    .. plot::
-        :context: close-figs
-
-        >>> import seaborn as sns
-        >>> sns.set_theme(style="whitegrid")
-        >>> tips = sns.load_dataset("tips")
-        >>> ax = sns.swarmplot(x=tips["total_bill"])
-
-    Group the swarms by a categorical variable:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.swarmplot(x="day", y="total_bill", data=tips)
-
-    Draw horizontal swarms:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.swarmplot(x="total_bill", y="day", data=tips)
-
-    Color the points using a second categorical variable:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.swarmplot(x="day", y="total_bill", hue="sex", data=tips)
-
-    Split each level of the ``hue`` variable along the categorical axis:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.swarmplot(x="day", y="total_bill", hue="smoker",
-        ...                    data=tips, palette="Set2", dodge=True)
-
-    Control swarm order by passing an explicit order:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.swarmplot(x="time", y="total_bill", data=tips,
-        ...                    order=["Dinner", "Lunch"])
-
-    Plot using larger points:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.swarmplot(x="time", y="total_bill", data=tips, size=6)
-
-    Draw swarms of observations on top of a box plot:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.boxplot(x="total_bill", y="day", data=tips, whis=np.inf)
-        >>> ax = sns.swarmplot(x="total_bill", y="day", data=tips, color=".2")
-
-    Draw swarms of observations on top of a violin plot:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.violinplot(x="day", y="total_bill", data=tips, inner=None)
-        >>> ax = sns.swarmplot(x="day", y="total_bill", data=tips,
-        ...                    color="white", edgecolor="gray")
-
-    Use :func:`catplot` to combine a :func:`swarmplot` and a
-    :class:`FacetGrid`. This allows grouping within additional categorical
-    variables. Using :func:`catplot` is safer than using :class:`FacetGrid`
-    directly, as it ensures synchronization of variable order across facets:
-
-    .. plot::
-        :context: close-figs
-
-        >>> g = sns.catplot(x="sex", y="total_bill",
-        ...                 hue="smoker", col="time",
-        ...                 data=tips, kind="swarm",
-        ...                 height=4, aspect=.7);
+    .. include:: ../docstrings/swarmplot.rst
 
     """).format(**_categorical_docs)
 
@@ -3726,6 +3576,7 @@ def catplot(
     orient=None, color=None, palette=None,
     legend=True, legend_out=True, sharex=True, sharey=True,
     margin_titles=False, facet_kws=None,
+    hue_norm=None, fixed_scale=True, formatter=None,
     **kwargs
 ):
 
@@ -3743,6 +3594,132 @@ def catplot(
         err = "Plot kind '{}' is not recognized".format(kind)
         raise ValueError(err)
 
+    # Check for attempt to plot onto specific axes and warn
+    if "ax" in kwargs:
+        msg = ("catplot is a figure-level function and does not accept "
+               f"target axes. You may wish to try {kind}plot")
+        warnings.warn(msg, UserWarning)
+        kwargs.pop("ax")
+
+    refactored_kinds = [
+        "strip", "swarm",
+    ]
+
+    if kind in refactored_kinds:
+
+        p = _CategoricalFacetPlotter(
+            data=data,
+            variables=_CategoricalFacetPlotter.get_semantics(locals()),
+            order=order,
+            orient=orient,
+            require_numeric=False,
+            fixed_scale=fixed_scale,
+        )
+
+        # XXX Copying a fair amount from displot, which is not ideal
+
+        for var in ["row", "col"]:
+            # Handle faceting variables that lack name information
+            if var in p.variables and p.variables[var] is None:
+                p.variables[var] = f"_{var}_"
+
+        # Adapt the plot_data dataframe for use with FacetGrid
+        data = p.plot_data.rename(columns=p.variables)
+        data = data.loc[:, ~data.columns.duplicated()]
+
+        col_name = p.variables.get("col", None)
+        row_name = p.variables.get("row", None)
+
+        if facet_kws is None:
+            facet_kws = {}
+
+        g = FacetGrid(
+            data=data, row=row_name, col=col_name,
+            col_wrap=col_wrap, row_order=row_order,
+            col_order=col_order, height=height,
+            sharex=sharex, sharey=sharey,
+            aspect=aspect,
+            **facet_kws,
+        )
+
+        if fixed_scale or p.var_types[p.cat_axis] == "categorical":
+            p.scale_categorical(p.cat_axis, order=order, formatter=formatter)
+
+        p._attach(g)
+
+        if not p.has_xy_data:
+            return g
+
+        palette, hue_order = p._hue_backcompat(color, palette, hue_order)
+        p.map_hue(palette=palette, order=hue_order, norm=hue_norm)
+
+        if kind == "strip":
+
+            # TODO get these defaults programatically?
+            jitter = kwargs.pop("jitter", True)
+            dodge = kwargs.pop("dodge", False)
+            edgecolor = kwargs.pop("edgecolor", "gray")  # XXX TODO default
+
+            plot_kws = kwargs.copy()
+
+            # XXX Copying possibly bad default decisions from original code for now
+            plot_kws.setdefault("zorder", 3)
+            plot_kws.setdefault("s", 25)
+            plot_kws.setdefault("linewidth", 0)
+
+            p.plot_strips(
+                jitter=jitter,
+                dodge=dodge,
+                color=color,
+                edgecolor=edgecolor,
+                plot_kws=plot_kws,
+            )
+
+        elif kind == "swarm":
+
+            # TODO get these defaults programatically?
+            dodge = kwargs.pop("dodge", False)
+            edgecolor = kwargs.pop("edgecolor", "gray")  # XXX TODO default
+            warn_thresh = kwargs.pop("warn_thresh", .05)
+
+            plot_kws = kwargs.copy()
+
+            # XXX Copying possibly bad default decisions from original code for now
+            plot_kws.setdefault("zorder", 3)
+            plot_kws.setdefault("s", 25)
+
+            if plot_kws.setdefault("linewidth", 0) is None:
+                plot_kws["linewidth"] = np.sqrt(plot_kws["s"]) / 10
+
+            p.plot_swarms(
+                dodge=dodge,
+                color=color,
+                edgecolor=edgecolor,
+                warn_thresh=warn_thresh,
+                plot_kws=plot_kws,
+            )
+
+        # XXX best way to do this housekeeping?
+        for ax in g.axes.flat:
+            p._adjust_cat_axis(ax, axis=p.cat_axis)
+
+        g.set_axis_labels(
+            p.variables.get("x", None),
+            p.variables.get("y", None),
+        )
+        g.set_titles()
+        g.tight_layout()
+
+        # XXX Hack to get the legend data in the right place
+        for ax in g.axes.flat:
+            g._update_legend_data(ax)
+            ax.legend_ = None
+
+        if legend and (hue is not None) and (hue not in [x, row, col]):
+            g.add_legend(title=hue, label_order=hue_order)
+
+        return g
+
     # Alias the input variables to determine categorical order and palette
     # correctly in the case of a count plot
     if kind == "count":
@@ -3755,13 +3732,6 @@ def catplot(
     else:
         x_, y_ = x, y
 
-    # Check for attempt to plot onto specific axes and warn
-    if "ax" in kwargs:
-        msg = ("catplot is a figure-level function and does not accept "
-               "target axes. You may wish to try {}".format(kind + "plot"))
-        warnings.warn(msg, UserWarning)
-        kwargs.pop("ax")
-
     # Determine the order for the whole dataset, which will be used in all
     # facets to ensure representation of all data in the final plot
     plotter_class = {
@@ -3770,8 +3740,6 @@ def catplot(
         "boxen": _LVPlotter,
         "bar": _BarPlotter,
         "point": _PointPlotter,
-        "strip": _StripPlotter,
-        "swarm": _SwarmPlotter,
         "count": _CountPlotter,
     }[kind]
     p = _CategoricalPlotter()
@@ -3801,8 +3769,17 @@ def catplot(
     # so we need to define ``palette`` to get default behavior for the
     # categorical functions
     p.establish_colors(color, palette, 1)
-    if kind != "point" or hue is not None:
-        palette = p.colors
+    if (
+        (kind != "point" or hue is not None)
+        # XXX changing this to temporarily support bad sharex=False behavior where
+        # cat variables could take different colors, which we already warned
+        # about "breaking" (aka fixing) in the future
+        and ((sharex and p.orient == "v") or (sharey and p.orient == "h"))
+    ):
+        if p.hue_names is None:
+            palette = dict(zip(p.group_names, p.colors))
+        else:
+            palette = dict(zip(p.hue_names, p.colors))
 
     # Determine keyword arguments for the facets
     facet_kws = {} if facet_kws is None else facet_kws
@@ -3853,8 +3830,7 @@ def catplot(
 
 
 catplot.__doc__ = dedent("""\
-    Figure-level interface for drawing categorical plots onto a
-    :class:`FacetGrid`.
+    Figure-level interface for drawing categorical plots onto a FacetGrid.
 
     This function provides access to several axes-level functions that
     show the relationship between a numerical and one or more categorical
@@ -4009,3 +3985,200 @@ catplot.__doc__ = dedent("""\
         <seaborn.axisgrid.FacetGrid object at 0x...>
 
     """).format(**_categorical_docs)
+
+
+class Beeswarm:
+    """Modifies a scatterplot artist to show a beeswarm plot."""
+    def __init__(self, orient="v", width=0.8, warn_thresh=.05):
+
+        # XXX should we keep the orient parameterization or specify the swarm axis?
+
+        self.orient = orient
+        self.width = width
+        self.warn_thresh = warn_thresh
+
+    def __call__(self, points, center):
+        """Swarm `points`, a PathCollection, around the `center` position."""
+        # Convert from point size (area) to diameter
+
+        ax = points.axes
+        dpi = ax.figure.dpi
+
+        # Get the original positions of the points
+        orig_xy_data = points.get_offsets()
+
+        # Reset the categorical positions to the center line
+        cat_idx = 1 if self.orient == "h" else 0
+        orig_xy_data[:, cat_idx] = center
+
+        # Transform the data coordinates to point coordinates.
+        # We'll figure out the swarm positions in the latter
+        # and then convert back to data coordinates and replot
+        orig_x_data, orig_y_data = orig_xy_data.T
+        orig_xy = ax.transData.transform(orig_xy_data)
+
+        # Order the variables so that x is the categorical axis
+        if self.orient == "h":
+            orig_xy = orig_xy[:, [1, 0]]
+
+        # Add a column with each point's radius
+        sizes = points.get_sizes()
+        if sizes.size == 1:
+            sizes = np.repeat(sizes, orig_xy.shape[0])
+        edge = points.get_linewidth().item()
+        radii = (np.sqrt(sizes) + edge) / 2 * (dpi / 72)
+        orig_xy = np.c_[orig_xy, radii]
+
+        # Sort along the value axis to facilitate the beeswarm
+        sorter = np.argsort(orig_xy[:, 1])
+        orig_xyr = orig_xy[sorter]
+
+        # Adjust points along the categorical axis to prevent overlaps
+        new_xyr = np.empty_like(orig_xyr)
+        new_xyr[sorter] = self.beeswarm(orig_xyr)
+
+        # Transform the point coordinates back to data coordinates
+        if self.orient == "h":
+            new_xy = new_xyr[:, [1, 0]]
+        else:
+            new_xy = new_xyr[:, :2]
+        new_x_data, new_y_data = ax.transData.inverted().transform(new_xy).T
+
+        swarm_axis = {"h": "y", "v": "x"}[self.orient]
+        log_scale = getattr(ax, f"get_{swarm_axis}scale")() == "log"
+
+        # Add gutters
+        if self.orient == "h":
+            self.add_gutters(new_y_data, center, log_scale=log_scale)
+        else:
+            self.add_gutters(new_x_data, center, log_scale=log_scale)
+
+        # Reposition the points so they do not overlap
+        if self.orient == "h":
+            points.set_offsets(np.c_[orig_x_data, new_y_data])
+        else:
+            points.set_offsets(np.c_[new_x_data, orig_y_data])
+
+    def beeswarm(self, orig_xyr):
+        """Adjust x position of points to avoid overlaps."""
+        # In this method, `x` is always the categorical axis
+        # Center of the swarm, in point coordinates
+        midline = orig_xyr[0, 0]
+
+        # Start the swarm with the first point
+        swarm = np.atleast_2d(orig_xyr[0])
+
+        # Loop over the remaining points
+        for xyr_i in orig_xyr[1:]:
+
+            # Find the points in the swarm that could possibly
+            # overlap with the point we are currently placing
+            neighbors = self.could_overlap(xyr_i, swarm)
+
+            # Find positions that would be valid individually
+            # with respect to each of the swarm neighbors
+            candidates = self.position_candidates(xyr_i, neighbors)
+
+            # Sort candidates by their centrality
+            offsets = np.abs(candidates[:, 0] - midline)
+            candidates = candidates[np.argsort(offsets)]
+
+            # Find the first candidate that does not overlap any neighbors
+            new_xyr_i = self.first_non_overlapping_candidate(candidates, neighbors)
+
+            # Place it into the swarm
+            swarm = np.vstack([swarm, new_xyr_i])
+
+        return swarm
+
+    def could_overlap(self, xyr_i, swarm):
+        """Return a list of all swarm points that could overlap with target."""
+        # Because we work backwards through the swarm and can short-circuit,
+        # the for-loop is faster than vectorization
+        _, y_i, r_i = xyr_i
+        neighbors = []
+        for xyr_j in reversed(swarm):
+            _, y_j, r_j = xyr_j
+            if (y_i - y_j) < (r_i + r_j):
+                neighbors.append(xyr_j)
+            else:
+                break
+        return np.array(neighbors)[::-1]
+
+    def position_candidates(self, xyr_i, neighbors):
+        """Return a list of coordinates that might be valid by adjusting x."""
+        candidates = [xyr_i]
+        x_i, y_i, r_i = xyr_i
+        left_first = True
+        for x_j, y_j, r_j in neighbors:
+            dy = y_i - y_j
+            dx = np.sqrt(max((r_i + r_j) ** 2 - dy ** 2, 0)) * 1.05
+            cl, cr = (x_j - dx, y_i, r_i), (x_j + dx, y_i, r_i)
+            if left_first:
+                new_candidates = [cl, cr]
+            else:
+                new_candidates = [cr, cl]
+            candidates.extend(new_candidates)
+            left_first = not left_first
+        return np.array(candidates)
+
+    def first_non_overlapping_candidate(self, candidates, neighbors):
+        """Find the first candidate that does not overlap with the swarm."""
+
+        # If we have no neighbors, all candidates are good.
+        if len(neighbors) == 0:
+            return candidates[0]
+
+        neighbors_x = neighbors[:, 0]
+        neighbors_y = neighbors[:, 1]
+        neighbors_r = neighbors[:, 2]
+
+        for xyr_i in candidates:
+
+            x_i, y_i, r_i = xyr_i
+
+            dx = neighbors_x - x_i
+            dy = neighbors_y - y_i
+            sq_distances = np.square(dx) + np.square(dy)
+
+            sep_needed = np.square(neighbors_r + r_i)
+
+            # Good candidate does not overlap any of neighbors which means that
+            # squared distance between candidate and any of the neighbors has
+            # to be at least square of the summed radii
+            good_candidate = np.all(sq_distances >= sep_needed)
+
+            if good_candidate:
+                return xyr_i
+
+        raise RuntimeError(
+            "No non-overlapping candidates found. This should not happen."
+        )
+
+    def add_gutters(self, points, center, log_scale=False):
+        """Stop points from extending beyond their territory."""
+        half_width = self.width / 2
+        if log_scale:
+            low_gutter = 10 ** (np.log10(center) - half_width)
+        else:
+            low_gutter = center - half_width
+        off_low = points < low_gutter
+        if off_low.any():
+            points[off_low] = low_gutter
+        if log_scale:
+            high_gutter = 10 ** (np.log10(center) + half_width)
+        else:
+            high_gutter = center + half_width
+        off_high = points > high_gutter
+        if off_high.any():
+            points[off_high] = high_gutter
+
+        gutter_prop = (off_high + off_low).sum() / len(points)
+        if gutter_prop > self.warn_thresh:
+            msg = (
+                "{:.1%} of the points cannot be placed; you may want "
+                "to decrease the size of the markers or use stripplot."
+            ).format(gutter_prop)
+            warnings.warn(msg, UserWarning)
+
+        return points
