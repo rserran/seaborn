@@ -7,7 +7,7 @@ seaborn: statistical data visualization
 
 [![PyPI Version](https://img.shields.io/pypi/v/seaborn.svg)](https://pypi.org/project/seaborn/)
 [![License](https://img.shields.io/pypi/l/seaborn.svg)](https://github.com/mwaskom/seaborn/blob/master/LICENSE)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.592845.svg)](https://doi.org/10.5281/zenodo.592845)
+[![DOI](https://joss.theoj.org/papers/10.21105/joss.03021/status.svg)](https://doi.org/10.21105/joss.03021)
 ![Tests](https://github.com/mwaskom/seaborn/workflows/CI/badge.svg)
 [![Code Coverage](https://codecov.io/gh/mwaskom/seaborn/branch/master/graph/badge.svg)](https://codecov.io/gh/mwaskom/seaborn)
 
@@ -22,7 +22,6 @@ Online documentation is available at [seaborn.pydata.org](https://seaborn.pydata
 The docs include a [tutorial](https://seaborn.pydata.org/tutorial.html), [example gallery](https://seaborn.pydata.org/examples/index.html), [API reference](https://seaborn.pydata.org/api.html), and other useful information.
 
 To build the documentation locally, please refer to [`doc/README.md`](doc/README.md).
-
 
 Dependencies
 ------------
@@ -53,12 +52,17 @@ Seaborn is also available from Anaconda and can be installed with conda:
 
 Note that the main anaconda repository typically lags PyPI in adding new releases.
 
+Citing
+------
+
+A paper describing seaborn has been published in the [Journal of Open Source Software](https://joss.theoj.org/papers/10.21105/joss.03021). The paper provides an introduction to the key features of the library, and it can be used as a citation if seaborn proves integral to a scientific publication.
+
 Testing
 -------
 
 Testing seaborn requires installing additional packages listed in `ci/utils.txt`.
 
-To test the code, run `make test` in the source directory. This will exercise both the unit tests and docstring examples (using [pytest](https://docs.pytest.org/)) and generate a coverate report.
+To test the code, run `make test` in the source directory. This will exercise both the unit tests and docstring examples (using [pytest](https://docs.pytest.org/)) and generate a coverage report.
 
 The doctests require a network connection (unless all example datasets are cached), but the unit tests can be run offline with `make unittests`.
 

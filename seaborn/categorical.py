@@ -54,7 +54,6 @@ class _CategoricalPlotterNew(VectorPlotter):
         order=None,
         orient=None,
         require_numeric=False,
-        fixed_scale=True,
     ):
 
         super().__init__(data=data, variables=variables)
@@ -86,10 +85,22 @@ class _CategoricalPlotterNew(VectorPlotter):
         # _core variable assignment, we'll want to figure out how to express that.
         if self.input_format == "wide" and self.orient == "h":
             self.plot_data = self.plot_data.rename(columns={"x": "y", "y": "x"})
-            orig_x, orig_x_type = self.variables["x"], self.var_types["x"]
-            orig_y, orig_y_type = self.variables["y"], self.var_types["y"]
+            orig_x, orig_y = self.variables["x"], self.variables["y"]
             self.variables.update({"x": orig_y, "y": orig_x})
+            orig_x_type, orig_y_type = self.var_types["x"], self.var_types["y"]
             self.var_types.update({"x": orig_y_type, "y": orig_x_type})
+
+        # Categorical plots can be "univariate" in which case they get an anonymous
+        # category label on the opposite axis. Note: this duplicates code in the core
+        # scale_categorical function. We need to do it here because of the next line.
+        if self.cat_axis not in self.variables:
+            self.variables[self.cat_axis] = None
+            self.var_types[self.cat_axis] = "categorical"
+            self.plot_data[self.cat_axis] = ""
+
+        # Categorical variables have discrete levels that we need to track
+        cat_levels = categorical_order(self.plot_data[self.cat_axis], order)
+        self.var_levels[self.cat_axis] = cat_levels
 
     def _hue_backcompat(self, color, palette, hue_order, force_hue=False):
         """Implement backwards compatability for hue parametrization.
@@ -162,22 +173,13 @@ class _CategoricalPlotterNew(VectorPlotter):
         if self.var_types[axis] != "categorical":
             return
 
-        data = self.plot_data[axis]
-        if self.facets is not None:
-            share_group = getattr(ax, f"get_shared_{axis}_axes")()
-            shared_axes = [getattr(ax, f"{axis}axis")] + [
-                getattr(other_ax, f"{axis}axis")
-                for other_ax in self.facets.axes.flat
-                if share_group.joined(ax, other_ax)
-            ]
-            data = data[self.converters[axis].isin(shared_axes)]
-
-        if self._var_ordered[axis]:
-            order = categorical_order(data, self.var_levels[axis])
-        else:
-            order = categorical_order(data)
-
-        n = max(len(order), 1)
+        # We can infer the total number of categories (including those from previous
+        # plots that are not part of the plot we are currently making) from the number
+        # of ticks, which matplotlib sets up while doing unit conversion. This feels
+        # slightly risky, as if we are relying on something that may be a matplotlib
+        # implementation detail. But I cannot think of a better way to keep track of
+        # the state from previous categorical calls (see GH2516 for context)
+        n = len(getattr(ax, f"get_{axis}ticks")())
 
         if axis == "x":
             ax.xaxis.grid(False)
@@ -210,10 +212,11 @@ class _CategoricalPlotterNew(VectorPlotter):
                 offsets = np.zeros(n_levels)
         return offsets
 
-    # Note that the plotting methods here aim (in most cases) to produce the exact same
-    # artists as the original version of the code, so there is some weirdness that might
-    # not otherwise be clean or make sense in this context, such as adding empty artists
-    # for combinations of variables with no observations
+    # Note that the plotting methods here aim (in most cases) to produce the
+    # exact same artists as the original (pre 0.12) version of the code, so
+    # there is some weirdness that might not otherwise be clean or make sense in
+    # this context, such as adding empty artists for combinations of variables
+    # with no observations
 
     def plot_strips(
         self,
@@ -2767,7 +2770,6 @@ def stripplot(
         order=order,
         orient=orient,
         require_numeric=False,
-        fixed_scale=fixed_scale,
     )
 
     if ax is None:
@@ -2890,7 +2892,6 @@ def swarmplot(
         order=order,
         orient=orient,
         require_numeric=False,
-        fixed_scale=fixed_scale,
     )
 
     if ax is None:
@@ -3613,7 +3614,6 @@ def catplot(
             order=order,
             orient=orient,
             require_numeric=False,
-            fixed_scale=fixed_scale,
         )
 
         # XXX Copying a fair amount from displot, which is not ideal

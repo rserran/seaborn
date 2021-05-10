@@ -1,5 +1,4 @@
 """Functions to visualize matrices of data."""
-import itertools
 import warnings
 
 import matplotlib as mpl
@@ -335,6 +334,7 @@ class _HeatMapper:
         ax.set(xticks=xticks, yticks=yticks)
         xtl = ax.set_xticklabels(xticklabels)
         ytl = ax.set_yticklabels(yticklabels, rotation="vertical")
+        plt.setp(ytl, va="center")  # GH2484
 
         # Possibly rotate them if they overlap
         _draw_figure(ax.figure)
@@ -691,7 +691,7 @@ class _DendrogramPlotter(object):
         """
         tree_kws = {} if tree_kws is None else tree_kws.copy()
         tree_kws.setdefault("linewidths", .5)
-        tree_kws.setdefault("colors", ".2")
+        tree_kws.setdefault("colors", tree_kws.pop("color", (.2, .2, .2)))
 
         if self.rotate and self.axis == 0:
             coords = zip(self.dependent_coord, self.independent_coord)
@@ -973,9 +973,6 @@ class ClusterGrid(Grid):
         axis : int
             Which axis to normalize across. If 0, normalize across rows, if 1,
             normalize across columns.
-        vmin : int
-            If 0, then subtract the minimum of the data before dividing by
-            the range.
 
         Returns
         -------
@@ -1037,35 +1034,36 @@ class ClusterGrid(Grid):
         Returns
         -------
         matrix : numpy.array
-            A numpy array of integer values, where each corresponds to a color
-            from the originally provided list of colors
+            A numpy array of integer values, where each indexes into the cmap
         cmap : matplotlib.colors.ListedColormap
 
         """
-        # check for nested lists/color palettes.
-        # Will fail if matplotlib color is list not tuple
-        if any(issubclass(type(x), list) for x in colors):
-            all_colors = set(itertools.chain(*colors))
-            n = len(colors)
-            m = len(colors[0])
+        try:
+            mpl.colors.to_rgb(colors[0])
+        except ValueError:
+            # We have a 2D color structure
+            m, n = len(colors), len(colors[0])
+            if not all(len(c) == n for c in colors[1:]):
+                raise ValueError("Multiple side color vectors must have same size")
         else:
-            all_colors = set(colors)
-            n = 1
-            m = len(colors)
+            # We have one vector of colors
+            m, n = 1, len(colors)
             colors = [colors]
-        color_to_value = dict((col, i) for i, col in enumerate(all_colors))
 
-        matrix = np.array([color_to_value[c]
-                           for color in colors for c in color])
+        # Map from unique colors to colormap index value
+        unique_colors = {}
+        matrix = np.zeros((m, n), int)
+        for i, inner in enumerate(colors):
+            for j, color in enumerate(inner):
+                idx = unique_colors.setdefault(color, len(unique_colors))
+                matrix[i, j] = idx
 
-        shape = (n, m)
-        matrix = matrix.reshape(shape)
+        # Reorder for clustering and transpose for axis
         matrix = matrix[:, ind]
         if axis == 0:
-            # row-side:
             matrix = matrix.T
 
-        cmap = mpl.colors.ListedColormap(all_colors)
+        cmap = mpl.colors.ListedColormap(list(unique_colors))
         return matrix, cmap
 
     def savefig(self, *args, **kwargs):

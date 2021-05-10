@@ -295,6 +295,20 @@ class TestRugPlot(SharedAxesLevelTests):
         assert ax.get_xlabel() == flat_series.name
         assert not ax.get_ylabel()
 
+    def test_log_scale(self, long_df):
+
+        ax1, ax2 = plt.figure().subplots(2)
+
+        ax2.set_xscale("log")
+
+        rugplot(data=long_df, x="z", ax=ax1)
+        rugplot(data=long_df, x="z", ax=ax2)
+
+        rug1 = np.stack(ax1.collections[0].get_segments())
+        rug2 = np.stack(ax2.collections[0].get_segments())
+
+        assert_array_almost_equal(rug1, rug2)
+
 
 class TestKDEPlotUnivariate(SharedAxesLevelTests):
 
@@ -375,6 +389,10 @@ class TestKDEPlotUnivariate(SharedAxesLevelTests):
         with pytest.warns(UserWarning):
             ax = kdeplot(x=[5])
         assert not ax.lines
+
+        with pytest.warns(None) as record:
+            ax = kdeplot(x=[5], warn_singular=False)
+        assert not record
 
     def test_variable_assignment(self, long_df):
 
@@ -874,6 +892,10 @@ class TestKDEPlotBivariate:
             ax = dist.kdeplot(x=[5], y=[6])
         assert not ax.lines
 
+        with pytest.warns(None) as record:
+            ax = kdeplot(x=[5], y=[7], warn_singular=False)
+        assert not record
+
     def test_fill_artists(self, long_df):
 
         for fill in [True, False]:
@@ -926,7 +948,7 @@ class TestKDEPlotBivariate:
         for c1, c2 in zip(ax1.collections, ax2.collections):
             assert_array_equal(c1.get_segments(), c2.get_segments())
 
-    def test_bandwiddth(self, rng):
+    def test_bandwidth(self, rng):
 
         n = 100
         x, y = rng.multivariate_normal([0, 0], [(.2, .5), (.5, 2)], n).T
@@ -1217,6 +1239,17 @@ class TestHistPlotUnivariate(SharedAxesLevelTests):
         assert_array_almost_equal(layer_xs[1], dodge_xs[1])
         assert_array_almost_equal(layer_xs[0], dodge_xs[0] - bw / 2)
 
+    def test_hue_as_numpy_dodged(self, long_df):
+        # https://github.com/mwaskom/seaborn/issues/2452
+
+        ax = histplot(
+            long_df,
+            x="y", hue=long_df["a"].to_numpy(),
+            multiple="dodge", bins=1,
+        )
+        # Note hue order reversal
+        assert ax.patches[1].get_x() < ax.patches[0].get_x()
+
     def test_multiple_input_check(self, flat_series):
 
         with pytest.raises(ValueError, match="`multiple` must be"):
@@ -1294,6 +1327,12 @@ class TestHistPlotUnivariate(SharedAxesLevelTests):
         for bars in bar_groups:
             bar_heights = [b.get_height() for b in bars]
             assert sum(bar_heights) == pytest.approx(1)
+
+    def test_percent_stat(self, flat_series):
+
+        ax = histplot(flat_series, stat="percent")
+        bar_heights = [b.get_height() for b in ax.patches]
+        assert sum(bar_heights) == 100
 
     def test_common_bins(self, long_df):
 
@@ -1446,12 +1485,14 @@ class TestHistPlotUnivariate(SharedAxesLevelTests):
 
     def test_kde_singular_data(self):
 
-        with pytest.warns(UserWarning):
+        with pytest.warns(None) as record:
             ax = histplot(x=np.ones(10), kde=True)
+        assert not record
         assert not ax.lines
 
-        with pytest.warns(UserWarning):
+        with pytest.warns(None) as record:
             ax = histplot(x=[5], kde=True)
+        assert not record
         assert not ax.lines
 
     def test_element_default(self, long_df):
@@ -1587,10 +1628,21 @@ class TestHistPlotUnivariate(SharedAxesLevelTests):
 
     def test_shrink(self, long_df):
 
+        f, (ax1, ax2) = plt.subplots(2)
+
         bw = 2
-        shrink = .5
-        ax = histplot(long_df, x="x", binwidth=bw, shrink=shrink)
-        assert ax.patches[0].get_width() == bw * shrink
+        shrink = .4
+
+        histplot(long_df, x="x", binwidth=bw, ax=ax1)
+        histplot(long_df, x="x", binwidth=bw, shrink=shrink, ax=ax2)
+
+        for p1, p2 in zip(ax1.patches, ax2.patches):
+
+            w1, w2 = p1.get_width(), p2.get_width()
+            assert w2 == pytest.approx(shrink * w1)
+
+            x1, x2 = p1.get_x(), p2.get_x()
+            assert (x2 + w2 / 2) == pytest.approx(x1 + w1 / 2)
 
     def test_log_scale_explicit(self, rng):
 
@@ -1632,6 +1684,18 @@ class TestHistPlotUnivariate(SharedAxesLevelTests):
         histplot(flat_series, **kws, bins=30, ax=ax1)
         histplot(flat_series, **kws, bins=30, ax=ax2)
         assert get_lw(ax1) > get_lw(ax2)
+
+        f, ax1 = plt.subplots(figsize=(4, 5))
+        f, ax2 = plt.subplots(figsize=(4, 5))
+        histplot(flat_series, **kws, bins=30, ax=ax1)
+        histplot(10 ** flat_series, **kws, bins=30, log_scale=True, ax=ax2)
+        assert get_lw(ax1) == pytest.approx(get_lw(ax2))
+
+        f, ax1 = plt.subplots(figsize=(4, 5))
+        f, ax2 = plt.subplots(figsize=(4, 5))
+        histplot(y=[0, 1, 1], **kws, discrete=True, ax=ax1)
+        histplot(y=["a", "b", "b"], **kws, ax=ax2)
+        assert get_lw(ax1) == pytest.approx(get_lw(ax2))
 
     def test_bar_kwargs(self, flat_series):
 
@@ -1686,7 +1750,7 @@ class TestHistPlotBivariate:
         ax = histplot(long_df, x="x", y="y", hue="c")
 
         hist = Histogram()
-        hist.define_bin_edges(long_df["x"], long_df["y"])
+        hist.define_bin_params(long_df["x"], long_df["y"])
 
         for i, sub_df in long_df.groupby("c"):
 
@@ -1778,7 +1842,7 @@ class TestHistPlotBivariate:
         )
 
         hist = Histogram(stat="density")
-        hist.define_bin_edges(long_df["x"], long_df["y"])
+        hist.define_bin_params(long_df["x"], long_df["y"])
 
         for i, sub_df in long_df.groupby("c"):
 
@@ -1798,17 +1862,28 @@ class TestHistPlotBivariate:
         )
 
         hist = Histogram()
-        hist.define_bin_edges(long_df["x"], long_df["y"])
+        bin_kws = hist.define_bin_params(long_df["x"], long_df["y"])
 
         for i, sub_df in long_df.groupby("c"):
 
-            sub_hist = Histogram(bins=hist.bin_edges, stat=stat)
+            sub_hist = Histogram(bins=bin_kws["bins"], stat=stat)
 
             mesh = ax.collections[i]
             mesh_data = mesh.get_array()
 
             density, (x_edges, y_edges) = sub_hist(sub_df["x"], sub_df["y"])
             assert_array_equal(mesh_data.data, density.T.flat)
+
+    @pytest.mark.parametrize("stat", ["probability", "percent"])
+    def test_mesh_normalization(self, long_df, stat):
+
+        ax = histplot(
+            long_df, x="x", y="y", stat=stat,
+        )
+
+        mesh_data = ax.collections[0].get_array()
+        expected_sum = {"probability": 1, "percent": 100}[stat]
+        assert mesh_data.data.sum() == expected_sum
 
     def test_mesh_colors(self, long_df):
 
@@ -1868,7 +1943,7 @@ class TestHistPlotBivariate:
         kws = dict(data=long_df, x="x", y="y", hue="c", bins=4)
 
         hist = Histogram(bins=kws["bins"])
-        hist.define_bin_edges(long_df["x"], long_df["y"])
+        hist.define_bin_params(long_df["x"], long_df["y"])
         full_counts, _ = hist(long_df["x"], long_df["y"])
 
         sub_counts = []
@@ -2016,6 +2091,19 @@ class TestECDFPlotUnivariate(SharedAxesLevelTests):
 
         with pytest.raises(NotImplementedError, match="Bivariate ECDF plots"):
             ecdfplot(data=long_df, x="x", y="y")
+
+    def test_log_scale(self, long_df):
+
+        ax1, ax2 = plt.figure().subplots(2)
+
+        ecdfplot(data=long_df, x="z", ax=ax1)
+        ecdfplot(data=long_df, x="z", log_scale=True, ax=ax2)
+
+        # Ignore first point, which either -inf (in linear) or 0 (in log)
+        line1 = ax1.lines[0].get_xydata()[1:]
+        line2 = ax2.lines[0].get_xydata()[1:]
+
+        assert_array_almost_equal(line1, line2)
 
 
 class TestDisPlot:
@@ -2216,6 +2304,21 @@ class TestDisPlot:
         l1 = sum(bool(c.get_segments()) for c in g.axes.flat[0].collections)
         l2 = sum(bool(c.get_segments()) for c in g.axes.flat[1].collections)
         assert l1 == l2
+
+    def test_bivariate_hist_norm(self, rng):
+
+        x, y = rng.normal(0, 1, (2, 100))
+        z = [0] * 80 + [1] * 20
+
+        g = displot(x=x, y=y, col=z, kind="hist")
+        clim1 = g.axes.flat[0].collections[0].get_clim()
+        clim2 = g.axes.flat[1].collections[0].get_clim()
+        assert clim1 == clim2
+
+        g = displot(x=x, y=y, col=z, kind="hist", common_norm=False)
+        clim1 = g.axes.flat[0].collections[0].get_clim()
+        clim2 = g.axes.flat[1].collections[0].get_clim()
+        assert clim1[1] > clim2[1]
 
 
 def integrate(y, x):

@@ -57,8 +57,10 @@ multiple : {{"layer", "stack", "fill"}}
     """,
     log_scale="""
 log_scale : bool or number, or pair of bools or numbers
-    Set a log scale on the data axis (or axes, with bivariate data) with the
-    given base (default 10), and evaluate the KDE in log space.
+    Set axis scale(s) to log. A single value sets the data axis for univariate
+    distributions and both axes for bivariate distributions. A pair of values
+    sets each axis independently. Numeric values are interpreted as the desired
+    base (default 10). If `False`, defer to the existing Axes scale.
     """,
     legend="""
 legend : bool
@@ -225,8 +227,16 @@ class _DistributionPlotter(VectorPlotter):
         return discrete
 
     def _resolve_multiple(self, curves, multiple):
+        """Modify the density data structure to handle multiple densities."""
 
-        # Modify the density data structure to handle multiple densities
+        # Default baselines have all densities starting at 0
+        baselines = {k: np.zeros_like(v) for k, v in curves.items()}
+
+        # TODO we should have some central clearinghouse for checking if any
+        # "grouping" (terminnology?) semantics have been assigned
+        if "hue" not in self.variables:
+            return curves, baselines
+
         if multiple in ("stack", "fill"):
 
             # Setting stack or fill means that the curves share a
@@ -261,11 +271,6 @@ class _DistributionPlotter(VectorPlotter):
                                            .shift(1, axis=1)
                                            .fillna(0))
 
-        else:
-
-            # All densities will start at 0
-            baselines = {k: np.zeros_like(v) for k, v in curves.items()}
-
         if multiple == "dodge":
 
             # Account for the unique semantic (non-faceting) levels
@@ -293,6 +298,7 @@ class _DistributionPlotter(VectorPlotter):
         common_grid,
         estimate_kws,
         log_scale,
+        warn_singular=True,
     ):
 
         # Initialize the estimator object
@@ -316,8 +322,12 @@ class _DistributionPlotter(VectorPlotter):
 
             observation_variance = observations.var()
             if math.isclose(observation_variance, 0) or np.isnan(observation_variance):
-                msg = "Dataset has 0 variance; skipping density estimate."
-                warnings.warn(msg, UserWarning)
+                msg = (
+                    "Dataset has 0 variance; skipping density estimate. "
+                    "Pass `warn_singular=False` to disable this warning."
+                )
+                if warn_singular:
+                    warnings.warn(msg, UserWarning)
                 continue
 
             # Extract the weights for this subset of observations
@@ -405,20 +415,13 @@ class _DistributionPlotter(VectorPlotter):
 
             if common_bins:
                 all_observations = all_data[self.data_variable]
-                estimator.define_bin_edges(
+                estimator.define_bin_params(
                     all_observations,
                     weights=all_data.get("weights", None),
                 )
 
         else:
             common_norm = False
-
-        # Turn multiple off if no hue or if hue exists but is redundant with faceting
-        facet_vars = [self.variables.get(var, None) for var in ["row", "col"]]
-        if "hue" not in self.variables:
-            multiple = None
-        elif self.variables["hue"] in facet_vars:
-            multiple = None
 
         # Estimate the smoothed kernel densities, for use later
         if kde:
@@ -432,6 +435,7 @@ class _DistributionPlotter(VectorPlotter):
                 common_bins,
                 kde_kws,
                 log_scale,
+                warn_singular=False,
             )
 
         # First pass through the data to compute the histograms
@@ -463,9 +467,12 @@ class _DistributionPlotter(VectorPlotter):
                 edges = np.power(10, edges)
 
             # Pack the histogram data and metadata together
+            orig_widths = np.diff(edges)
+            widths = shrink * orig_widths
+            edges = edges[:-1] + (1 - shrink) / 2 * orig_widths
             index = pd.MultiIndex.from_arrays([
-                pd.Index(edges[:-1], name="edges"),
-                pd.Index(np.diff(edges) * shrink, name="widths"),
+                pd.Index(edges, name="edges"),
+                pd.Index(widths, name="widths"),
             ])
             hist = pd.Series(heights, index=index, name="heights")
 
@@ -503,7 +510,8 @@ class _DistributionPlotter(VectorPlotter):
 
         # Default alpha should depend on other parameters
         if fill:
-            if multiple == "layer":
+            # Note: will need to account for other grouping semantics if added
+            if "hue" in self.variables and multiple == "layer":
                 default_alpha = .5 if element == "bars" else .25
             elif kde:
                 default_alpha = .5
@@ -539,9 +547,8 @@ class _DistributionPlotter(VectorPlotter):
                 # Use matplotlib bar plotting
 
                 plot_func = ax.bar if self.data_variable == "x" else ax.barh
-                move = .5 * (1 - shrink)
                 artists = plot_func(
-                    hist["edges"] + move,
+                    hist["edges"],
                     hist["heights"] - bottom,
                     hist["widths"],
                     bottom,
@@ -633,6 +640,18 @@ class _DistributionPlotter(VectorPlotter):
 
             # Now we handle linewidth, which depends on the scaling of the plot
 
+            # We will base everything on the minimum bin width
+            hist_metadata = pd.concat([
+                # Use .items for generality over dict or df
+                h.index.to_frame() for _, h in histograms.items()
+            ]).reset_index(drop=True)
+            thin_bar_idx = hist_metadata["widths"].idxmin()
+            binwidth = hist_metadata.loc[thin_bar_idx, "widths"]
+            left_edge = hist_metadata.loc[thin_bar_idx, "edges"]
+
+            # Set initial value
+            default_linewidth = math.inf
+
             # Loop through subsets based only on facet variables
             for sub_vars, _ in self.iter_data():
 
@@ -642,16 +661,10 @@ class _DistributionPlotter(VectorPlotter):
                 # Innocuous in other cases?
                 ax.autoscale_view()
 
-                # We will base everything on the minimum bin width
-                hist_metadata = [h.index.to_frame() for _, h in histograms.items()]
-                binwidth = min([
-                    h["widths"].min() for h in hist_metadata
-                ])
-
                 # Convert binwidth from data coordinates to pixels
-                pts_x, pts_y = 72 / ax.figure.dpi * (
-                    ax.transData.transform([binwidth, binwidth])
-                    - ax.transData.transform([0, 0])
+                pts_x, pts_y = 72 / ax.figure.dpi * abs(
+                    ax.transData.transform([left_edge + binwidth] * 2)
+                    - ax.transData.transform([left_edge] * 2)
                 )
                 if self.data_variable == "x":
                     binwidth_points = pts_x
@@ -660,24 +673,24 @@ class _DistributionPlotter(VectorPlotter):
 
                 # The relative size of the lines depends on the appearance
                 # This is a provisional value and may need more tweaking
-                default_linewidth = .1 * binwidth_points
+                default_linewidth = min(.1 * binwidth_points, default_linewidth)
 
-                # Set the attributes
-                for bar in hist_artists:
+            # Set the attributes
+            for bar in hist_artists:
 
-                    # Don't let the lines get too thick
-                    max_linewidth = bar.get_linewidth()
-                    if not fill:
-                        max_linewidth *= 1.5
+                # Don't let the lines get too thick
+                max_linewidth = bar.get_linewidth()
+                if not fill:
+                    max_linewidth *= 1.5
 
-                    linewidth = min(default_linewidth, max_linewidth)
+                linewidth = min(default_linewidth, max_linewidth)
 
-                    # If not filling, don't let lines dissapear
-                    if not fill:
-                        min_linewidth = .5
-                        linewidth = max(linewidth, min_linewidth)
+                # If not filling, don't let lines dissapear
+                if not fill:
+                    min_linewidth = .5
+                    linewidth = max(linewidth, min_linewidth)
 
-                    bar.set_linewidth(linewidth)
+                bar.set_linewidth(linewidth)
 
         # --- Finalize the plot ----
 
@@ -723,7 +736,7 @@ class _DistributionPlotter(VectorPlotter):
         if set(self.variables) - {"x", "y"}:
             all_data = self.comp_data.dropna()
             if common_bins:
-                estimator.define_bin_edges(
+                estimator.define_bin_params(
                     all_data["x"],
                     all_data["y"],
                     all_data.get("weights", None),
@@ -740,7 +753,7 @@ class _DistributionPlotter(VectorPlotter):
             )
             full_heights.append(sub_heights)
 
-        common_color_norm = "hue" not in self.variables or common_norm
+        common_color_norm = not set(self.variables) - {"x", "y"} or common_norm
 
         if pthresh is not None and common_color_norm:
             thresh = self._quantile_to_level(full_heights, pthresh)
@@ -865,6 +878,7 @@ class _DistributionPlotter(VectorPlotter):
         multiple,
         common_norm,
         common_grid,
+        warn_singular,
         fill,
         color,
         legend,
@@ -901,9 +915,10 @@ class _DistributionPlotter(VectorPlotter):
             common_grid,
             estimate_kws,
             log_scale,
+            warn_singular,
         )
 
-        # Note: raises when no hue and multiple != layer. A problem?
+        # Adjust densities based on the `multiple` rule
         densities, baselines = self._resolve_multiple(densities, multiple)
 
         # Control the interaction with autoscaling by defining sticky_edges
@@ -916,9 +931,11 @@ class _DistributionPlotter(VectorPlotter):
         else:
             sticky_support = []
 
-        # XXX unfilled kdeplot is ignoring
         if fill:
-            default_alpha = .25 if multiple == "layer" else .75
+            if multiple == "layer":
+                default_alpha = .25
+            else:
+                default_alpha = .75
         else:
             default_alpha = 1
         alpha = plot_kws.pop("alpha", default_alpha)  # TODO make parameter?
@@ -1000,6 +1017,7 @@ class _DistributionPlotter(VectorPlotter):
         color,
         legend,
         cbar,
+        warn_singular,
         cbar_ax,
         cbar_kws,
         estimate_kws,
@@ -1032,8 +1050,12 @@ class _DistributionPlotter(VectorPlotter):
             # Check that KDE will not error out
             variance = observations[["x", "y"]].var()
             if any(math.isclose(x, 0) for x in variance) or variance.isna().any():
-                msg = "Dataset has 0 variance; skipping density estimate."
-                warnings.warn(msg, UserWarning)
+                msg = (
+                    "Dataset has 0 variance; skipping density estimate. "
+                    "Pass `warn_singular=False` to disable this warning."
+                )
+                if warn_singular:
+                    warnings.warn(msg, UserWarning)
                 continue
 
             # Estimate the density of observations at this level
@@ -1200,6 +1222,12 @@ class _DistributionPlotter(VectorPlotter):
             if "hue" in self.variables:
                 artist_kws["color"] = self._hue_map(sub_vars["hue"])
 
+            # Return the data variable to the linear domain
+            # This needs an automatic solution; see GH2409
+            if self._log_scaled(self.data_variable):
+                vals = np.power(10, vals)
+                vals[0] = -np.inf
+
             # Work out the orientation of the plot
             if self.data_variable == "x":
                 plot_args = vals, stat
@@ -1275,6 +1303,11 @@ class _DistributionPlotter(VectorPlotter):
         """Draw a rugplot along one axis of the plot."""
         vector = sub_data[var]
         n = len(vector)
+
+        # Return data to linear domain
+        # This needs an automatic solution; see GH2409
+        if self._log_scaled(var):
+            vector = np.power(10, vector)
 
         # We'll always add a single collection with varying colors
         if "hue" in self.variables:
@@ -1564,6 +1597,9 @@ def kdeplot(
     # Renamed params
     data=None, data2=None,
 
+    # New in v0.12
+    warn_singular=True,
+
     **kwargs,
 ):
 
@@ -1685,6 +1721,7 @@ def kdeplot(
             fill=fill,
             color=color,
             legend=legend,
+            warn_singular=warn_singular,
             estimate_kws=estimate_kws,
             **plot_kws,
         )
@@ -1698,6 +1735,7 @@ def kdeplot(
             thresh=thresh,
             legend=legend,
             color=color,
+            warn_singular=warn_singular,
             cbar=cbar,
             cbar_ax=cbar_ax,
             cbar_kws=cbar_kws,
@@ -1793,6 +1831,9 @@ fill : bool or None
     If True, fill in the area under univariate density curves or between
     bivariate contours. If None, the default depends on ``multiple``.
 {params.core.data}
+warn_singular : bool
+    If True, issue a warning when trying to estimate the density of data
+    with zero variance.
 kwargs
     Other keyword arguments are passed to one of the following matplotlib
     functions:

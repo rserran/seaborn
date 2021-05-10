@@ -373,14 +373,19 @@ class FacetGrid(Grid):
             subplot_kws["ylim"] = ylim
 
         # --- Initialize the subplot grid
+
+        # Disable autolayout so legend_out works properly
+        with mpl.rc_context({"figure.autolayout": False}):
+            fig = plt.figure(figsize=figsize)
+
         if col_wrap is None:
 
-            kwargs = dict(figsize=figsize, squeeze=False,
+            kwargs = dict(squeeze=False,
                           sharex=sharex, sharey=sharey,
                           subplot_kw=subplot_kws,
                           gridspec_kw=gridspec_kws)
 
-            fig, axes = plt.subplots(nrow, ncol, **kwargs)
+            axes = fig.subplots(nrow, ncol, **kwargs)
 
             if col is None and row is None:
                 axes_dict = {}
@@ -399,7 +404,6 @@ class FacetGrid(Grid):
                 warnings.warn("`gridspec_kws` ignored when using `col_wrap`")
 
             n_axes = len(col_names)
-            fig = plt.figure(figsize=figsize)
             axes = np.empty(n_axes, object)
             axes[0] = fig.add_subplot(nrow, ncol, 1, **subplot_kws)
             if sharex:
@@ -533,7 +537,7 @@ class FacetGrid(Grid):
         gridspec_kws : dict
             Dictionary of keyword arguments passed to
             :class:`matplotlib.gridspec.GridSpec`
-            (via :func:`matplotlib.pyplot.subplots`).
+            (via :meth:`matplotlib.figure.Figure.subplots`).
             Ignored if ``col_wrap`` is not ``None``.
 
         See Also
@@ -1173,16 +1177,19 @@ class PairGrid(Grid):
         # Create the figure and the array of subplots
         figsize = len(x_vars) * height * aspect, len(y_vars) * height
 
-        fig, axes = plt.subplots(len(y_vars), len(x_vars),
-                                 figsize=figsize,
-                                 sharex="col", sharey="row",
-                                 squeeze=False)
+        # Disable autolayout so legend_out works
+        with mpl.rc_context({"figure.autolayout": False}):
+            fig = plt.figure(figsize=figsize)
+
+        axes = fig.subplots(len(y_vars), len(x_vars),
+                            sharex="col", sharey="row",
+                            squeeze=False)
 
         # Possibly remove upper axes to make a corner grid
         # Note: setting up the axes is usually the most time-intensive part
         # of using the PairGrid. We are foregoing the speed improvement that
         # we would get by just not setting up the hidden axes so that we can
-        # avoid implementing plt.subplots ourselves. But worth thinking about.
+        # avoid implementing fig.subplots ourselves. But worth thinking about.
         self._corner = corner
         if corner:
             hide_indices = np.triu_indices_from(axes, 1)
@@ -1677,7 +1684,7 @@ class JointGrid(object):
 
         Parameters
         ----------
-        joint_func, marginal_func: callables
+        joint_func, marginal_func : callables
             Functions to draw the bivariate and univariate plots. See methods
             referenced above for information about the required characteristics
             of these functions.
@@ -2012,6 +2019,7 @@ def pairplot(
         grid.map_diag(histplot, **diag_kws)
     elif diag_kind == "kde":
         diag_kws.setdefault("fill", True)
+        diag_kws.setdefault("warn_singular", False)
         grid.map_diag(kdeplot, **diag_kws)
 
     # Maybe plot on the off-diagonals
@@ -2028,6 +2036,7 @@ def pairplot(
         plotter(regplot, **plot_kws)
     elif kind == "kde":
         from .distributions import kdeplot  # Avoid circular import
+        plot_kws.setdefault("warn_singular", False)
         plotter(kdeplot, **plot_kws)
     elif kind == "hist":
         from .distributions import histplot  # Avoid circular import
@@ -2131,6 +2140,7 @@ def jointplot(
             marg_func = histplot
         else:
             marg_func = kdeplot
+            marginal_kws.setdefault("warn_singular", False)
             marginal_kws.setdefault("fill", True)
 
         marginal_kws.setdefault("color", color)
@@ -2163,6 +2173,7 @@ def jointplot(
     elif kind.startswith("kde"):
 
         joint_kws.setdefault("color", color)
+        joint_kws.setdefault("warn_singular", False)
         grid.plot_joint(kdeplot, **joint_kws)
 
         marginal_kws.setdefault("color", color)
