@@ -342,7 +342,7 @@ def check_load_dataset(name):
 
 
 def check_load_cached_dataset(name):
-    # Test the cacheing using a temporary file.
+    # Test the caching using a temporary file.
     with tempfile.TemporaryDirectory() as tmpdir:
         # download and cache
         ds = load_dataset(name, cache=True, data_home=tmpdir)
@@ -371,12 +371,20 @@ def test_load_datasets():
 
 
 @_network(url="https://github.com/mwaskom/seaborn-data")
-def test_load_dataset_error():
+def test_load_dataset_string_error():
 
     name = "bad_name"
     err = f"'{name}' is not one of the example datasets."
     with pytest.raises(ValueError, match=err):
         load_dataset(name)
+
+
+def test_load_dataset_passed_data_error():
+
+    df = pd.DataFrame()
+    err = "This function accepts only strings"
+    with pytest.raises(TypeError, match=err):
+        load_dataset(df)
 
 
 @_network(url="https://github.com/mwaskom/seaborn-data")

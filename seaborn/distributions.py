@@ -685,7 +685,7 @@ class _DistributionPlotter(VectorPlotter):
 
                 linewidth = min(default_linewidth, max_linewidth)
 
-                # If not filling, don't let lines dissapear
+                # If not filling, don't let lines disappear
                 if not fill:
                     min_linewidth = .5
                     linewidth = max(linewidth, min_linewidth)
@@ -1447,7 +1447,7 @@ Plot univariate or bivariate histograms to show distributions of datasets.
 
 A histogram is a classic visualization tool that represents the distribution
 of one or more variables by counting the number of observations that fall within
-disrete bins.
+discrete bins.
 
 This function can normalize the statistic computed within each bin to estimate
 frequency, density or probability mass, and it can add a smooth curve obtained
@@ -1750,7 +1750,7 @@ kdeplot.__doc__ = """\
 Plot univariate or bivariate distributions using kernel density estimation.
 
 A kernel density estimate (KDE) plot is a method for visualizing the
-distribution of observations in a dataset, analagous to a histogram. KDE
+distribution of observations in a dataset, analogous to a histogram. KDE
 represents the data using a continuous probability density curve in one or
 more dimensions.
 
@@ -2093,7 +2093,7 @@ rugplot.__doc__ = """\
 Plot marginal distributions by drawing ticks along the x and y axes.
 
 This function is intended to complement other plots by showing the location
-of individual observations in an unobstrusive way.
+of individual observations in an unobtrusive way.
 
 Parameters
 ----------
@@ -2177,8 +2177,8 @@ def displot(
             p.variables[var] = f"_{var}_"
 
     # Adapt the plot_data dataframe for use with FacetGrid
-    data = p.plot_data.rename(columns=p.variables)
-    data = data.loc[:, ~data.columns.duplicated()]
+    grid_data = p.plot_data.rename(columns=p.variables)
+    grid_data = grid_data.loc[:, ~grid_data.columns.duplicated()]
 
     col_name = p.variables.get("col", None)
     row_name = p.variables.get("row", None)
@@ -2187,7 +2187,7 @@ def displot(
         facet_kws = {}
 
     g = FacetGrid(
-        data=data, row=row_name, col=col_name,
+        data=grid_data, row=row_name, col=col_name,
         col_wrap=col_wrap, row_order=row_order,
         col_order=col_order, height=height,
         aspect=aspect,
@@ -2310,6 +2310,21 @@ def displot(
     )
     g.set_titles()
     g.tight_layout()
+
+    if data is not None and (x is not None or y is not None):
+        if not isinstance(data, pd.DataFrame):
+            data = pd.DataFrame(data)
+        g.data = pd.merge(
+            data,
+            g.data[g.data.columns.difference(data.columns)],
+            left_index=True,
+            right_index=True,
+        )
+    else:
+        wide_cols = {
+            k: f"_{k}_" if v is None else v for k, v in p.variables.items()
+        }
+        g.data = p.plot_data.rename(columns=wide_cols)
 
     return g
 

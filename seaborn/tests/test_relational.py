@@ -617,15 +617,19 @@ class TestRelationalPlotter(Helpers):
         for line, color in zip(lines, palette):
             assert line.get_color() == color
 
-    def test_relplot_data_columns(self, long_df):
+    def test_relplot_data(self, long_df):
 
-        long_df = long_df.assign(x_var=long_df["x"], y_var=long_df["y"])
         g = relplot(
-            data=long_df,
-            x="x_var", y="y_var",
-            hue=long_df["a"].to_numpy(), col="c"
+            data=long_df.to_dict(orient="list"),
+            x="x",
+            y=long_df["y"].rename("y_var"),
+            hue=long_df["a"].to_numpy(),
+            col="c",
         )
-        assert g.data.columns.to_list() == ["x_var", "y_var", "_hue_", "c"]
+        expected_cols = set(long_df.columns.to_list() + ["_hue_", "y_var"])
+        assert set(g.data.columns) == expected_cols
+        assert_array_equal(g.data["y_var"], long_df["y"])
+        assert_array_equal(g.data["_hue_"], long_df["a"])
 
     def test_facet_variable_collision(self, long_df):
 
@@ -1125,7 +1129,7 @@ class TestLinePlotter(SharedAxesLevelTests, Helpers):
 
         ax = lineplot(x=[1, 2], y=[1, 2], dashes=(2, 1))
         line = ax.lines[0]
-        # Not a great test, but lines don't expose the dash style publically
+        # Not a great test, but lines don't expose the dash style publicly
         assert line.get_linestyle() == "--"
 
     def test_lineplot_axes(self, wide_df):
@@ -1688,6 +1692,12 @@ class TestScatterPlotter(SharedAxesLevelTests, Helpers):
         # Check that we avoid weird matplotlib default auto scaling
         # https://github.com/matplotlib/matplotlib/issues/17586
         ax.get_xlim()[0] > ax.xaxis.convert_units(np.datetime64("2002-01-01"))
+
+    def test_unfilled_marker_edgecolor_warning(self, long_df):  # GH2636
+
+        with pytest.warns(None) as record:
+            scatterplot(data=long_df, x="x", y="y", marker="+")
+        assert not record
 
     def test_scatterplot_vs_relplot(self, long_df, long_semantics):
 

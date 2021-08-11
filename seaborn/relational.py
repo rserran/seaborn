@@ -1,6 +1,7 @@
 import warnings
 
 import numpy as np
+import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
@@ -552,9 +553,6 @@ class _ScatterPlotter(_RelationalPlotter):
         x = data.get("x", empty)
         y = data.get("y", empty)
 
-        # Set defaults for other visual attributes
-        kws.setdefault("edgecolor", "w")
-
         if "style" in self.variables:
             # Use a representative marker so scatter sets the edgecolor
             # properly for line art markers. We currently enforce either
@@ -562,6 +560,14 @@ class _ScatterPlotter(_RelationalPlotter):
             example_level = self._style_map.levels[0]
             example_marker = self._style_map(example_level, "marker")
             kws.setdefault("marker", example_marker)
+
+        # Conditionally set the marker edgecolor based on whether the marker is "filled"
+        # See https://github.com/matplotlib/matplotlib/issues/17849 for context
+        m = kws.get("marker", mpl.rcParams.get("marker", "o"))
+        if not isinstance(m, mpl.markers.MarkerStyle):
+            m = mpl.markers.MarkerStyle(m)
+        if m.is_filled():
+            kws.setdefault("edgecolor", "w")
 
         # TODO this makes it impossible to vary alpha with hue which might
         # otherwise be useful? Should we just pass None?
@@ -582,7 +588,7 @@ class _ScatterPlotter(_RelationalPlotter):
             p = [self._style_map(val, "path") for val in data["style"]]
             points.set_paths(p)
 
-        # Apply dependant default attributes
+        # Apply dependent default attributes
 
         if "linewidth" not in kws:
             sizes = points.get_sizes()
@@ -697,7 +703,7 @@ err_style : "band" or "bars"
     Whether to draw the confidence intervals with translucent error bands
     or discrete error bars.
 err_kws : dict of keyword arguments
-    Additional paramters to control the aesthetics of the error bars. The
+    Additional parameters to control the aesthetics of the error bars. The
     kwargs are passed either to :meth:`matplotlib.axes.Axes.fill_between`
     or :meth:`matplotlib.axes.Axes.errorbar`, depending on ``err_style``.
 {params.rel.legend}
@@ -1002,7 +1008,18 @@ def relplot(
     orig_cols = {
         f"_{k}": f"_{k}_" if v is None else v for k, v in variables.items()
     }
-    g.data = g.data.rename(columns=orig_cols)
+    grid_data = g.data.rename(columns=orig_cols)
+    if data is not None and (x is not None or y is not None):
+        if not isinstance(data, pd.DataFrame):
+            data = pd.DataFrame(data)
+        g.data = pd.merge(
+            data,
+            grid_data[grid_data.columns.difference(data.columns)],
+            left_index=True,
+            right_index=True,
+        )
+    else:
+        g.data = grid_data
 
     return g
 
