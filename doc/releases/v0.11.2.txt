@@ -6,15 +6,19 @@ This is a minor release that addresses issues in the v0.11 series and adds a sma
 
 - |API| |Enhancement| In :func:`lmplot`, added a new `facet_kws` parameter and deprecated the `sharex`, `sharey`, and `legend_out` parameters from the function signature; pass them in a `facet_kws` dictionary instead (:pr:`2576`).
 
-- |Feature| In :func:`histplot`, added `stat="percent"` as an option for normalization such that bar heights sum to 100 and `stat="proportion"` as an alias for the existing `stat="probability"`: (:pr:`2461`, :pr:`2634`).
+- |Feature| Added a :func:`move_legend` convenience function for repositioning the legend on an existing axes or figure, along with updating its properties. This function should be preferred over calling `ax.legend` with no legend data, which does not reliably work across seaborn plot types (:pr:`2643`).
 
-- |Feature| Added a ``refline`` method to :class:`FacetGrid` and :class:`JointGrid` for adding horizontal and/or vertical reference lines to every subplot in one step (:pr:`2620`).
+- |Feature| In :func:`histplot`, added `stat="percent"` as an option for normalization such that bar heights sum to 100 and `stat="proportion"` as an alias for the existing `stat="probability"` (:pr:`2461`, :pr:`2634`).
 
-- |Feature| In :func:`kdeplot`, added the `warn_singular` parameter to silence the warning about data with zero variance (:pr:`2566`).
+- |Feature| Added :meth:`FacetGrid.refline` and :meth:`JointGrid.refline` methods for plotting horizontal and/or vertical reference lines on every subplot in one step (:pr:`2620`).
 
-- |Enhancement| In :class:`FacetGrid` and functions that use it, visibility of the interior axis labels is now disabled, and exterior axis labels are no longer erased when adding additional layers. This produces the same results for plots made by seaborn functions, but it may produce different (better, in most cases) results for customized facet plots (:pr:`2583`).
+- |Feature| In :func:`kdeplot`, added a `warn_singular` parameter to silence the warning about data with zero variance (:pr:`2566`).
 
 - |Enhancement| In :func:`histplot`, improved performance with large datasets and many groupings/facets (:pr:`2559`, :pr:`2570`).
+
+- |Enhancement| The :class:`FacetGrid`, :class:`PairGrid`, and :class:`JointGrid` objects now reference the underlying matplotlib figure with a `.figure` attribute. The existing `.fig` attribute still exists but is discouraged and may eventually be deprecated. The effect is that you can now call `obj.figure` on the return value from any seaborn function to access the matplotlib object (:pr:`2639`).
+
+- |Enhancement| In :class:`FacetGrid` and functions that use it, visibility of the interior axis labels is now disabled, and exterior axis labels are no longer erased when adding additional layers. This produces the same results for plots made by seaborn functions, but it may produce different (better, in most cases) results for customized facet plots (:pr:`2583`).
 
 - |Enhancement| In :class:`FacetGrid`, :class:`PairGrid`, and functions that use them, the matplotlib `figure.autolayout` parameter is disabled to avoid having the legend overlap the plot (:pr:`2571`).
 
@@ -36,6 +40,8 @@ This is a minor release that addresses issues in the v0.11 series and adds a sma
 
 - |Fix| In :func:`displot`, the default alpha value now adjusts to a provided `multiple` parameter even when `hue` is not assigned (:pr:`2462`).
 
+- |Fix| In :func:`displot`, fixed a bug that caused faceted 2D histograms to error out with `common_bins=False` (:pr:`2640`).
+
 - |Fix| In :func:`rugplot`, fixed a bug that prevented the use of datetime data (:pr:`2458`).
 
 - |Fix| In :func:`relplot` and :func:`displot`, fixed a bug where the dataframe attached to the returned `FacetGrid` object dropped columns that were not used in the plot (:pr:`2623`).
@@ -53,3 +59,5 @@ This is a minor release that addresses issues in the v0.11 series and adds a sma
 - |Fix| Fixed an issue that prevented Python from running in `-OO` mode while using seaborn (:pr:`2473`).
 
 - |Docs| Improved the API documentation for theme-related functions (:pr:`2573`).
+
+- |Docs| Added docstring pages for all methods on documented classes (:pr:`2644`).
