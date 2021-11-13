@@ -10,7 +10,6 @@ from matplotlib.colors import rgb2hex, to_rgb, to_rgba
 import pytest
 from pytest import approx
 import numpy.testing as npt
-from distutils.version import LooseVersion
 from numpy.testing import (
     assert_array_equal,
     assert_array_less,
@@ -20,6 +19,7 @@ from .. import categorical as cat
 from .. import palettes
 
 from .._core import categorical_order
+from ..external.version import Version
 from ..categorical import (
     _CategoricalPlotterNew,
     Beeswarm,
@@ -109,6 +109,14 @@ class CategoricalFixture:
     u = pd.Series(np.tile(list("jkh"), int(n_total / 3)))
     df = pd.DataFrame(dict(y=y, g=g, h=h, u=u))
     x_df["W"] = g
+
+    def get_box_artists(self, ax):
+
+        if Version(mpl.__version__) < Version("3.5.0b0"):
+            return ax.artists
+        else:
+            # Exclude labeled patches, which are for the legend
+            return [p for p in ax.patches if not p.get_label()]
 
 
 class TestCategoricalPlotter(CategoricalFixture):
@@ -855,12 +863,12 @@ class TestBoxPlotter(CategoricalFixture):
     def test_axes_data(self):
 
         ax = cat.boxplot(x="g", y="y", data=self.df)
-        assert len(ax.artists) == 3
+        assert len(self.get_box_artists(ax)) == 3
 
         plt.close("all")
 
         ax = cat.boxplot(x="g", y="y", hue="h", data=self.df)
-        assert len(ax.artists) == 6
+        assert len(self.get_box_artists(ax)) == 6
 
         plt.close("all")
 
@@ -868,14 +876,14 @@ class TestBoxPlotter(CategoricalFixture):
 
         ax = cat.boxplot(x="g", y="y", data=self.df, saturation=1)
         pal = palettes.color_palette(n_colors=3)
-        for patch, color in zip(ax.artists, pal):
+        for patch, color in zip(self.get_box_artists(ax), pal):
             assert patch.get_facecolor()[:3] == color
 
         plt.close("all")
 
         ax = cat.boxplot(x="g", y="y", hue="h", data=self.df, saturation=1)
         pal = palettes.color_palette(n_colors=2)
-        for patch, color in zip(ax.artists, pal * 2):
+        for patch, color in zip(self.get_box_artists(ax), pal * 2):
             assert patch.get_facecolor()[:3] == color
 
         plt.close("all")
@@ -884,7 +892,7 @@ class TestBoxPlotter(CategoricalFixture):
 
         ax = cat.boxplot(x="g", y="y", data=self.df,
                          order=["a", "b", "c", "d"])
-        assert len(ax.artists) == 3
+        assert len(self.get_box_artists(ax)) == 3
 
     def test_missing_data(self):
 
@@ -894,13 +902,13 @@ class TestBoxPlotter(CategoricalFixture):
         y[-2:] = np.nan
 
         ax = cat.boxplot(x=x, y=y)
-        assert len(ax.artists) == 3
+        assert len(self.get_box_artists(ax)) == 3
 
         plt.close("all")
 
         y[-1] = 0
         ax = cat.boxplot(x=x, y=y, hue=h)
-        assert len(ax.artists) == 7
+        assert len(self.get_box_artists(ax)) == 7
 
         plt.close("all")
 
@@ -1638,7 +1646,7 @@ class SharedScatterTests(SharedAxesLevelTests):
         self.func(data=long_df, x="a", y="y", facecolor="C4", ax=ax)
         assert self.get_last_color(ax) == to_rgba("C4")
 
-        if LooseVersion(mpl.__version__) >= "3.1.0":
+        if Version(mpl.__version__) >= Version("3.1.0"):
             # https://github.com/matplotlib/matplotlib/pull/12851
 
             ax = plt.figure().subplots()
@@ -1653,7 +1661,7 @@ class SharedScatterTests(SharedAxesLevelTests):
 
         keys = ["c", "facecolor", "facecolors"]
 
-        if LooseVersion(mpl.__version__) >= "3.1.0":
+        if Version(mpl.__version__) >= Version("3.1.0"):
             # https://github.com/matplotlib/matplotlib/pull/12851
             keys.append("fc")
 
@@ -2054,7 +2062,7 @@ class SharedScatterTests(SharedAxesLevelTests):
         # (Even though visual output is ok -- so it's not an actual bug).
         # I'm not exactly sure why, so this version check is approximate
         # and should be revisited on a version bump.
-        if LooseVersion(mpl.__version__) < "3.1":
+        if Version(mpl.__version__) < Version("3.1"):
             pytest.xfail()
 
         ax = plt.figure().subplots()
@@ -2766,11 +2774,11 @@ class TestCatPlot(CategoricalFixture):
 
         g = cat.catplot(x="g", y="y", data=self.df, kind="box")
         want_artists = self.g.unique().size
-        assert len(g.ax.artists) == want_artists
+        assert len(self.get_box_artists(g.ax)) == want_artists
 
         g = cat.catplot(x="g", y="y", hue="h", data=self.df, kind="box")
         want_artists = self.g.unique().size * self.h.unique().size
-        assert len(g.ax.artists) == want_artists
+        assert len(self.get_box_artists(g.ax)) == want_artists
 
         g = cat.catplot(x="g", y="y", data=self.df,
                         kind="violin", inner=None)
@@ -3137,14 +3145,14 @@ class TestBoxenPlotter(CategoricalFixture):
 
         ax = cat.boxenplot(x="g", y="y", data=self.df, saturation=1)
         pal = palettes.color_palette(n_colors=3)
-        for patch, color in zip(ax.artists, pal):
+        for patch, color in zip(self.get_box_artists(ax), pal):
             assert patch.get_facecolor()[:3] == color
 
         plt.close("all")
 
         ax = cat.boxenplot(x="g", y="y", hue="h", data=self.df, saturation=1)
         pal = palettes.color_palette(n_colors=2)
-        for patch, color in zip(ax.artists, pal * 2):
+        for patch, color in zip(self.get_box_artists(ax), pal * 2):
             assert patch.get_facecolor()[:3] == color
 
         plt.close("all")
@@ -3286,7 +3294,7 @@ class TestBoxenPlotter(CategoricalFixture):
         plt.close("all")
 
     @pytest.mark.skipif(
-        LooseVersion(pd.__version__) < "1.2",
+        Version(pd.__version__) < Version("1.2"),
         reason="Test requires pandas>=1.2")
     def test_Float64_input(self):
         data = pd.DataFrame(
