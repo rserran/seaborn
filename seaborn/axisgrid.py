@@ -1,3 +1,4 @@
+from __future__ import annotations
 from itertools import product
 from inspect import signature
 import warnings
@@ -8,16 +9,14 @@ import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-from ._core import VectorPlotter, variable_type, categorical_order
+from ._oldcore import VectorPlotter, variable_type, categorical_order
 from . import utils
 from .utils import _check_argument, adjust_legend_subtitles, _draw_figure
 from .palettes import color_palette, blend_palette
-from ._decorators import _deprecate_positional_args
 from ._docstrings import (
     DocstringComponents,
     _core_docs,
 )
-
 
 __all__ = ["FacetGrid", "PairGrid", "JointGrid", "pairplot", "jointplot"]
 
@@ -309,7 +308,7 @@ _facet_docs = dict(
 
 class FacetGrid(Grid):
     """Multi-plot grid for plotting conditional relationships."""
-    @_deprecate_positional_args
+
     def __init__(
         self, data, *,
         row=None, col=None, hue=None, col_wrap=None,
@@ -317,17 +316,10 @@ class FacetGrid(Grid):
         row_order=None, col_order=None, hue_order=None, hue_kws=None,
         dropna=False, legend_out=True, despine=True,
         margin_titles=False, xlim=None, ylim=None, subplot_kws=None,
-        gridspec_kws=None, size=None
+        gridspec_kws=None,
     ):
 
-        super(FacetGrid, self).__init__()
-
-        # Handle deprecations
-        if size is not None:
-            height = size
-            msg = ("The `size` parameter has been renamed to `height`; "
-                   "please update your code.")
-            warnings.warn(msg, UserWarning)
+        super().__init__()
 
         # Determine the hue facet layer information
         hue_var = hue
@@ -1136,13 +1128,10 @@ class PairGrid(Grid):
     See the :ref:`tutorial <grid_tutorial>` for more information.
 
     """
-    @_deprecate_positional_args
     def __init__(
-        self, data, *,
-        hue=None, hue_order=None, palette=None,
-        hue_kws=None, vars=None, x_vars=None, y_vars=None,
-        corner=False, diag_sharey=True, height=2.5, aspect=1,
-        layout_pad=.5, despine=True, dropna=False, size=None
+        self, data, *, hue=None, vars=None, x_vars=None, y_vars=None,
+        hue_order=None, palette=None, hue_kws=None, corner=False, diag_sharey=True,
+        height=2.5, aspect=1, layout_pad=.5, despine=True, dropna=False,
     ):
         """Initialize the plot figure and PairGrid object.
 
@@ -1154,6 +1143,12 @@ class PairGrid(Grid):
         hue : string (variable name)
             Variable in ``data`` to map plot aspects to different colors. This
             variable will be excluded from the default x and y variables.
+        vars : list of variable names
+            Variables within ``data`` to use, otherwise use every column with
+            a numeric datatype.
+        {x, y}_vars : lists of variable names
+            Variables within ``data`` to use separately for the rows and
+            columns of the figure; i.e. to make a non-square plot.
         hue_order : list of strings
             Order for the levels of the hue variable in the palette
         palette : dict or seaborn color palette
@@ -1163,12 +1158,6 @@ class PairGrid(Grid):
             Other keyword arguments to insert into the plotting call to let
             other plot attributes vary across levels of the hue variable (e.g.
             the markers in a scatterplot).
-        vars : list of variable names
-            Variables within ``data`` to use, otherwise use every column with
-            a numeric datatype.
-        {x, y}_vars : lists of variable names
-            Variables within ``data`` to use separately for the rows and
-            columns of the figure; i.e. to make a non-square plot.
         corner : bool
             If True, don't add axes to the upper (off-diagonal) triangle of the
             grid, making this a "corner" plot.
@@ -1195,14 +1184,7 @@ class PairGrid(Grid):
 
         """
 
-        super(PairGrid, self).__init__()
-
-        # Handle deprecations
-        if size is not None:
-            height = size
-            msg = ("The `size` parameter has been renamed to `height`; "
-                   "please update your code.")
-            warnings.warn(UserWarning(msg))
+        super().__init__()
 
         # Sort out the variables that define the grid
         numeric_cols = self._find_numeric_cols(data)
@@ -1569,9 +1551,10 @@ class PairGrid(Grid):
         else:
             hue = data.get(self._hue_var)
 
-        kwargs.setdefault("hue", hue)
-        kwargs.setdefault("hue_order", self._hue_order)
-        kwargs.setdefault("palette", self._orig_palette)
+        if "hue" not in kwargs:
+            kwargs.update({
+                "hue": hue, "hue_order": self._hue_order, "palette": self._orig_palette,
+            })
         func(x=x, y=y, **kwargs)
 
         self._update_legend_data(ax)
@@ -1626,8 +1609,6 @@ class PairGrid(Grid):
             ax.set_xlabel(label)
         for ax, label in zip(self.axes[:, 0], self.y_vars):
             ax.set_ylabel(label)
-        if self._corner:
-            self.axes[0, 0].set_ylabel("")
 
     def _find_numeric_cols(self, data):
         """Find which variables in a DataFrame are numeric."""
@@ -1646,21 +1627,13 @@ class JointGrid(_BaseGrid):
 
     """
 
-    @_deprecate_positional_args
     def __init__(
-        self, *,
-        x=None, y=None,
-        data=None,
+        self, data=None, *,
+        x=None, y=None, hue=None,
         height=6, ratio=5, space=.2,
-        dropna=False, xlim=None, ylim=None, size=None, marginal_ticks=False,
-        hue=None, palette=None, hue_order=None, hue_norm=None,
+        palette=None, hue_order=None, hue_norm=None,
+        dropna=False, xlim=None, ylim=None, marginal_ticks=False,
     ):
-        # Handle deprecations
-        if size is not None:
-            height = size
-            msg = ("The `size` parameter has been renamed to `height`; "
-                   "please update your code.")
-            warnings.warn(msg, UserWarning)
 
         # Set up the subplot grid
         f = plt.figure(figsize=(height, height))
@@ -1939,8 +1912,8 @@ Set up the grid of subplots and store data internally for easy plotting.
 
 Parameters
 ----------
-{params.core.xy}
 {params.core.data}
+{params.core.xy}
 height : number
     Size of each side of the figure in inches (it will be square).
 ratio : number
@@ -1978,7 +1951,6 @@ Examples
 )
 
 
-@_deprecate_positional_args
 def pairplot(
     data, *,
     hue=None, hue_order=None, palette=None,
@@ -2073,8 +2045,7 @@ def pairplot(
 
     if not isinstance(data, pd.DataFrame):
         raise TypeError(
-            "'data' must be pandas DataFrame object, not: {typefound}".format(
-                typefound=type(data)))
+            f"'data' must be pandas DataFrame object, not: {type(data)}")
 
     plot_kws = {} if plot_kws is None else plot_kws.copy()
     diag_kws = {} if diag_kws is None else diag_kws.copy()
@@ -2105,8 +2076,8 @@ def pairplot(
             if not isinstance(markers, list):
                 markers = [markers] * n_markers
             if len(markers) != n_markers:
-                raise ValueError(("markers must be a singleton or a list of "
-                                  "markers for each level of the hue variable"))
+                raise ValueError("markers must be a singleton or a list of "
+                                 "markers for each level of the hue variable")
             grid.hue_kws = {"marker": markers}
         elif kind == "scatter":
             if isinstance(markers, str):
@@ -2154,15 +2125,11 @@ def pairplot(
     return grid
 
 
-@_deprecate_positional_args
 def jointplot(
-    *,
-    x=None, y=None,
-    data=None,
-    kind="scatter", color=None, height=6, ratio=5, space=.2,
-    dropna=False, xlim=None, ylim=None, marginal_ticks=False,
+    data=None, *, x=None, y=None, hue=None, kind="scatter",
+    height=6, ratio=5, space=.2, dropna=False, xlim=None, ylim=None,
+    color=None, palette=None, hue_order=None, hue_norm=None, marginal_ticks=False,
     joint_kws=None, marginal_kws=None,
-    hue=None, palette=None, hue_order=None, hue_norm=None,
     **kwargs
 ):
     # Avoid circular imports
@@ -2331,11 +2298,12 @@ lightweight wrapper; if you need more flexibility, you should use
 
 Parameters
 ----------
-{params.core.xy}
 {params.core.data}
+{params.core.xy}
+{params.core.hue}
+    Semantic variable that is mapped to determine the color of plot elements.
 kind : {{ "scatter" | "kde" | "hist" | "hex" | "reg" | "resid" }}
     Kind of plot to draw. See the examples for references to the underlying functions.
-{params.core.color}
 height : numeric
     Size of the figure (it will be square).
 ratio : numeric
@@ -2346,15 +2314,14 @@ dropna : bool
     If True, remove observations that are missing from ``x`` and ``y``.
 {{x, y}}lim : pairs of numbers
     Axis limits to set before plotting.
+{params.core.color}
+{params.core.palette}
+{params.core.hue_order}
+{params.core.hue_norm}
 marginal_ticks : bool
     If False, suppress ticks on the count/density axis of the marginal plots.
 {{joint, marginal}}_kws : dicts
     Additional keyword arguments for the plot components.
-{params.core.hue}
-    Semantic variable that is mapped to determine the color of plot elements.
-{params.core.palette}
-{params.core.hue_order}
-{params.core.hue_norm}
 kwargs
     Additional keyword arguments are passed to the function used to
     draw the plot on the joint Axes, superseding items in the

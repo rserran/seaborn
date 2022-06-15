@@ -17,13 +17,12 @@ except ImportError:
 from . import utils
 from . import algorithms as algo
 from .axisgrid import FacetGrid, _facet_docs
-from ._decorators import _deprecate_positional_args
 
 
 __all__ = ["lmplot", "regplot", "residplot"]
 
 
-class _LinearPlotter(object):
+class _LinearPlotter:
     """Base class for plotting relational data in tidy format.
 
     To get anything useful done you'll have to inherit from this, but setup
@@ -397,6 +396,8 @@ class _RegressionPlotter(_LinearPlotter):
         else:
             # TODO abstraction
             ci_kws = {"color": kws["color"]}
+            if "alpha" in kws:
+                ci_kws["alpha"] = kws["alpha"]
             ci_kws["linewidth"] = mpl.rcParams["lines.linewidth"] * 1.75
             kws.setdefault("s", 50)
 
@@ -556,12 +557,9 @@ _regression_docs = dict(
 _regression_docs.update(_facet_docs)
 
 
-@_deprecate_positional_args
 def lmplot(
-    *,
-    x=None, y=None,
-    data=None,
-    hue=None, col=None, row=None,  # TODO move before data once * is enforced
+    data=None, *,
+    x=None, y=None, hue=None, col=None, row=None,
     palette=None, col_wrap=None, height=5, aspect=1, markers="o",
     sharex=None, sharey=None, hue_order=None, col_order=None, row_order=None,
     legend=True, legend_out=None, x_estimator=None, x_bins=None,
@@ -569,15 +567,8 @@ def lmplot(
     units=None, seed=None, order=1, logistic=False, lowess=False,
     robust=False, logx=False, x_partial=None, y_partial=None,
     truncate=True, x_jitter=None, y_jitter=None, scatter_kws=None,
-    line_kws=None, facet_kws=None, size=None,
+    line_kws=None, facet_kws=None,
 ):
-
-    # Handle deprecations
-    if size is not None:
-        height = size
-        msg = ("The `size` parameter has been renamed to `height`; "
-               "please update your code.")
-        warnings.warn(msg, UserWarning)
 
     if facet_kws is None:
         facet_kws = {}
@@ -621,8 +612,8 @@ def lmplot(
     if not isinstance(markers, list):
         markers = [markers] * n_markers
     if len(markers) != n_markers:
-        raise ValueError(("markers must be a singleton or a list of markers "
-                          "for each level of the hue variable"))
+        raise ValueError("markers must be a singleton or a list of markers "
+                         "for each level of the hue variable")
     facets.hue_kws = {"marker": markers}
 
     def update_datalim(data, x, y, ax, **kws):
@@ -671,9 +662,9 @@ lmplot.__doc__ = dedent("""\
 
     Parameters
     ----------
+    {data}
     x, y : strings, optional
         Input variables; these should be column names in ``data``.
-    {data}
     hue, col, row : strings
         Variables that define subsets of the data, which will be drawn on
         separate facets in the grid. See the ``*_order`` parameters to control
@@ -833,11 +824,8 @@ lmplot.__doc__ = dedent("""\
     """).format(**_regression_docs)
 
 
-@_deprecate_positional_args
 def regplot(
-    *,
-    x=None, y=None,
-    data=None,
+    data=None, *, x=None, y=None,
     x_estimator=None, x_bins=None, x_ci="ci",
     scatter=True, fit_reg=True, ci=95, n_boot=1000, units=None,
     seed=None, order=1, logistic=False, lowess=False, robust=False,
@@ -1032,12 +1020,9 @@ regplot.__doc__ = dedent("""\
     """).format(**_regression_docs)
 
 
-@_deprecate_positional_args
 def residplot(
-    *,
-    x=None, y=None,
-    data=None,
-    lowess=False, x_partial=None, y_partial=None,
+    data=None, *, x=None, y=None,
+    x_partial=None, y_partial=None, lowess=False,
     order=1, robust=False, dropna=True, label=None, color=None,
     scatter_kws=None, line_kws=None, ax=None
 ):
@@ -1050,18 +1035,17 @@ def residplot(
 
     Parameters
     ----------
+    data : DataFrame, optional
+        DataFrame to use if `x` and `y` are column names.
     x : vector or string
         Data or column name in `data` for the predictor variable.
     y : vector or string
         Data or column name in `data` for the response variable.
-    data : DataFrame, optional
-        DataFrame to use if `x` and `y` are column names.
-    lowess : boolean, optional
-        Fit a lowess smoother to the residual scatterplot.
-    {x, y}_partial : matrix or string(s) , optional
-        Matrix with same first dimension as `x`, or column name(s) in `data`.
+    {x, y}_partial : vectors or string(s) , optional
         These variables are treated as confounding and are removed from
         the `x` or `y` variables before plotting.
+    lowess : boolean, optional
+        Fit a lowess smoother to the residual scatterplot.
     order : int, optional
         Order of the polynomial to fit when calculating the residuals.
     robust : boolean, optional

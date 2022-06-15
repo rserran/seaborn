@@ -2,6 +2,7 @@
 from numbers import Number
 from functools import partial
 import math
+import textwrap
 import warnings
 
 import numpy as np
@@ -12,7 +13,7 @@ import matplotlib.transforms as tx
 from matplotlib.colors import to_rgba
 from matplotlib.collections import LineCollection
 
-from ._core import (
+from ._oldcore import (
     VectorPlotter,
 )
 from ._statistics import (
@@ -35,7 +36,6 @@ from .utils import (
 from .palettes import color_palette
 from .external import husl
 from .external.kde import gaussian_kde
-from ._decorators import _deprecate_positional_args
 from ._docstrings import (
     DocstringComponents,
     _core_docs,
@@ -280,8 +280,18 @@ class _DistributionPlotter(VectorPlotter):
             for key in curves:
                 level = dict(key)["hue"]
                 hist = curves[key].reset_index(name="heights")
-                hist["widths"] /= n
-                hist["edges"] += hue_levels.index(level) * hist["widths"]
+                level_idx = hue_levels.index(level)
+                if self._log_scaled(self.data_variable):
+                    log_min = np.log10(hist["edges"])
+                    log_max = np.log10(hist["edges"] + hist["widths"])
+                    log_width = (log_max - log_min) / n
+                    new_min = np.power(10, log_min + level_idx * log_width)
+                    new_max = np.power(10, log_min + (level_idx + 1) * log_width)
+                    hist["widths"] = new_max - new_min
+                    hist["edges"] = new_min
+                else:
+                    hist["widths"] /= n
+                    hist["edges"] += level_idx * hist["widths"]
 
                 curves[key] = hist.set_index(["edges", "widths"])["heights"]
 
@@ -304,14 +314,18 @@ class _DistributionPlotter(VectorPlotter):
         # Initialize the estimator object
         estimator = KDE(**estimate_kws)
 
-        all_data = self.plot_data.dropna()
-
         if set(self.variables) - {"x", "y"}:
             if common_grid:
                 all_observations = self.comp_data.dropna()
                 estimator.define_support(all_observations[data_variable])
         else:
             common_norm = False
+
+        all_data = self.plot_data.dropna()
+        if common_norm and "weights" in all_data:
+            whole_weight = all_data["weights"].sum()
+        else:
+            whole_weight = len(all_data)
 
         densities = {}
 
@@ -333,8 +347,10 @@ class _DistributionPlotter(VectorPlotter):
             # Extract the weights for this subset of observations
             if "weights" in self.variables:
                 weights = sub_data["weights"]
+                part_weight = weights.sum()
             else:
                 weights = None
+                part_weight = len(sub_data)
 
             # Estimate the density of observations at this level
             density, support = estimator(observations, weights=weights)
@@ -344,7 +360,7 @@ class _DistributionPlotter(VectorPlotter):
 
             # Apply a scaling factor so that the integral over all subsets is 1
             if common_norm:
-                density *= len(sub_data) / len(all_data)
+                density *= part_weight / whole_weight
 
             # Store the density for this level
             key = tuple(sub_vars.items())
@@ -382,9 +398,6 @@ class _DistributionPlotter(VectorPlotter):
         _check_argument("multiple", ["layer", "stack", "fill", "dodge"], multiple)
         _check_argument("element", ["bars", "step", "poly"], element)
 
-        if estimate_kws["discrete"] and element != "bars":
-            raise ValueError("`element` must be 'bars' when `discrete` is True")
-
         auto_bins_with_weights = (
             "weights" in self.variables
             and estimate_kws["bins"] == "auto"
@@ -408,20 +421,21 @@ class _DistributionPlotter(VectorPlotter):
         histograms = {}
 
         # Do pre-compute housekeeping related to multiple groups
-        # TODO best way to account for facet/semantic?
-        if set(self.variables) - {"x", "y"}:
+        all_data = self.comp_data.dropna()
+        all_weights = all_data.get("weights", None)
 
-            all_data = self.comp_data.dropna()
-
+        if set(self.variables) - {"x", "y"}:  # Check if we'll have multiple histograms
             if common_bins:
-                all_observations = all_data[self.data_variable]
                 estimator.define_bin_params(
-                    all_observations,
-                    weights=all_data.get("weights", None),
+                    all_data[self.data_variable], weights=all_weights
                 )
-
         else:
             common_norm = False
+
+        if common_norm and all_weights is not None:
+            whole_weight = all_weights.sum()
+        else:
+            whole_weight = len(all_data)
 
         # Estimate the smoothed kernel densities, for use later
         if kde:
@@ -447,8 +461,10 @@ class _DistributionPlotter(VectorPlotter):
 
             if "weights" in self.variables:
                 weights = sub_data["weights"]
+                part_weight = weights.sum()
             else:
                 weights = None
+                part_weight = len(sub_data)
 
             # Do the histogram computation
             heights, edges = estimator(observations, weights=weights)
@@ -478,7 +494,7 @@ class _DistributionPlotter(VectorPlotter):
 
             # Apply scaling to normalize across groups
             if common_norm:
-                hist *= len(sub_data) / len(all_data)
+                hist *= part_weight / whole_weight
 
             # Store the finalized histogram data for future plotting
             histograms[key] = hist
@@ -1571,103 +1587,69 @@ Examples
 )
 
 
-@_deprecate_positional_args
 def kdeplot(
-    x=None,  # Allow positional x, because behavior will not change with reorg
-    *,
-    y=None,
-    shade=None,  # Note "soft" deprecation, explained below
-    vertical=False,  # Deprecated
-    kernel=None,  # Deprecated
-    bw=None,  # Deprecated
-    gridsize=200,  # TODO maybe depend on uni/bivariate?
-    cut=3, clip=None, legend=True, cumulative=False,
-    shade_lowest=None,  # Deprecated, controlled with levels now
-    cbar=False, cbar_ax=None, cbar_kws=None,
-    ax=None,
-
-    # New params
-    weights=None,  # TODO note that weights is grouped with semantics
-    hue=None, palette=None, hue_order=None, hue_norm=None,
-    multiple="layer", common_norm=True, common_grid=False,
-    levels=10, thresh=.05,
-    bw_method="scott", bw_adjust=1, log_scale=None,
-    color=None, fill=None,
-
-    # Renamed params
-    data=None, data2=None,
-
-    # New in v0.12
-    warn_singular=True,
-
+    data=None, *, x=None, y=None, hue=None, weights=None,
+    palette=None, hue_order=None, hue_norm=None, color=None, fill=None,
+    multiple="layer", common_norm=True, common_grid=False, cumulative=False,
+    bw_method="scott", bw_adjust=1, warn_singular=True, log_scale=None,
+    levels=10, thresh=.05, gridsize=200, cut=3, clip=None,
+    legend=True, cbar=False, cbar_ax=None, cbar_kws=None, ax=None,
     **kwargs,
 ):
 
-    # Handle deprecation of `data2` as name for y variable
-    if data2 is not None:
+    # --- Start with backwards compatability for versions < 0.11.0 ----------------
 
-        y = data2
-
-        # If `data2` is present, we need to check for the `data` kwarg being
-        # used to pass a vector for `x`. We'll reassign the vectors and warn.
-        # We need this check because just passing a vector to `data` is now
-        # technically valid.
-
-        x_passed_as_data = (
-            x is None
-            and data is not None
-            and np.ndim(data) == 1
-        )
-
-        if x_passed_as_data:
-            msg = "Use `x` and `y` rather than `data` `and `data2`"
-            x = data
-        else:
-            msg = "The `data2` param is now named `y`; please update your code"
-
-        warnings.warn(msg, FutureWarning)
+    # Handle (past) deprecation of `data2`
+    if "data2" in kwargs:
+        msg = "`data2` has been removed (replaced by `y`); please update your code."
+        TypeError(msg)
 
     # Handle deprecation of `vertical`
-    if vertical:
-        msg = (
-            "The `vertical` parameter is deprecated and will be removed in a "
-            "future version. Assign the data to the `y` variable instead."
-        )
-        warnings.warn(msg, FutureWarning)
-        x, y = y, x
+    vertical = kwargs.pop("vertical", None)
+    if vertical is not None:
+        if vertical:
+            action_taken = "assigning data to `y`."
+            if x is None:
+                data, y = y, data
+            else:
+                x, y = y, x
+        else:
+            action_taken = "assigning data to `x`."
+        msg = textwrap.dedent(f"""\n
+        The `vertical` parameter is deprecated; {action_taken}
+        This will become an error in seaborn v0.13.0; please update your code.
+        """)
+        warnings.warn(msg, UserWarning, stacklevel=2)
 
     # Handle deprecation of `bw`
+    bw = kwargs.pop("bw", None)
     if bw is not None:
-        msg = (
-            "The `bw` parameter is deprecated in favor of `bw_method` and "
-            f"`bw_adjust`. Using {bw} for `bw_method`, but please "
-            "see the docs for the new parameters and update your code."
-        )
-        warnings.warn(msg, FutureWarning)
+        msg = textwrap.dedent(f"""\n
+        The `bw` parameter is deprecated in favor of `bw_method` and `bw_adjust`.
+        Setting `bw_method={bw}`, but please see the docs for the new parameters
+        and update your code. This will become an error in seaborn v0.13.0.
+        """)
+        warnings.warn(msg, UserWarning, stacklevel=2)
         bw_method = bw
 
     # Handle deprecation of `kernel`
-    if kernel is not None:
-        msg = (
-            "Support for alternate kernels has been removed. "
-            "Using Gaussian kernel."
-        )
-        warnings.warn(msg, UserWarning)
+    if kwargs.pop("kernel", None) is not None:
+        msg = textwrap.dedent("""\n
+        Support for alternate kernels has been removed; using Gaussian kernel.
+        This will become an error in seaborn v0.13.0; please update your code.
+        """)
+        warnings.warn(msg, UserWarning, stacklevel=2)
 
     # Handle deprecation of shade_lowest
+    shade_lowest = kwargs.pop("shade_lowest", None)
     if shade_lowest is not None:
         if shade_lowest:
             thresh = 0
-        msg = (
-            "`shade_lowest` is now deprecated in favor of `thresh`. "
-            f"Setting `thresh={thresh}`, but please update your code."
-        )
-        warnings.warn(msg, UserWarning)
-
-    # Handle `n_levels`
-    # This was never in the formal API but it was processed, and appeared in an
-    # example. We can treat as an alias for `levels` now and deprecate later.
-    levels = kwargs.pop("n_levels", levels)
+        msg = textwrap.dedent(f"""\n
+        `shade_lowest` has been replaced by `thresh`; setting `thresh={thresh}.
+        This will become an error in seaborn v0.13.0; please update your code.
+        """)
+        warnings.warn(msg, UserWarning, stacklevel=2)
 
     # Handle "soft" deprecation of shade `shade` is not really the right
     # terminology here, but unlike some of the other deprecated parameters it
@@ -1677,8 +1659,19 @@ def kdeplot(
     # enforcement hits, we can remove the shade/shade_lowest out of the
     # function signature all together and pull them out of the kwargs. Then we
     # can actually fire a FutureWarning, and eventually remove.
+    shade = kwargs.pop("shade", None)
     if shade is not None:
         fill = shade
+        msg = textwrap.dedent(f"""\n
+        `shade` is now deprecated in favor of `fill`; setting `fill={shade}`.
+        This will become an error in seaborn v0.14.0; please update your code.
+        """)
+        warnings.warn(msg, FutureWarning, stacklevel=2)
+
+    # Handle `n_levels`
+    # This was never in the formal API but it was processed, and appeared in an
+    # example. We can treat as an alias for `levels` now and deprecate later.
+    levels = kwargs.pop("n_levels", levels)
 
     # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - #
 
@@ -1764,49 +1757,18 @@ also depends on the selection of good smoothing parameters.
 
 Parameters
 ----------
+{params.core.data}
 {params.core.xy}
-shade : bool
-    Alias for ``fill``. Using ``fill`` is recommended.
-vertical : bool
-    Orientation parameter.
-
-    .. deprecated:: 0.11.0
-       specify orientation by assigning the ``x`` or ``y`` variables.
-
-kernel : str
-    Function that defines the kernel.
-
-    .. deprecated:: 0.11.0
-       support for non-Gaussian kernels has been removed.
-
-bw : str, number, or callable
-    Smoothing parameter.
-
-    .. deprecated:: 0.11.0
-       see ``bw_method`` and ``bw_adjust``.
-
-gridsize : int
-    Number of points on each dimension of the evaluation grid.
-{params.kde.cut}
-{params.kde.clip}
-{params.dist.legend}
-{params.kde.cumulative}
-shade_lowest : bool
-    If False, the area below the lowest contour will be transparent
-
-    .. deprecated:: 0.11.0
-       see ``thresh``.
-
-{params.dist.cbar}
-{params.dist.cbar_ax}
-{params.dist.cbar_kws}
-{params.core.ax}
+{params.core.hue}
 weights : vector or key in ``data``
     If provided, weight the kernel density estimation using these values.
-{params.core.hue}
 {params.core.palette}
 {params.core.hue_order}
 {params.core.hue_norm}
+{params.core.color}
+fill : bool or None
+    If True, fill in the area under univariate density curves or between
+    bivariate contours. If None, the default depends on ``multiple``.
 {params.dist.multiple}
 common_norm : bool
     If True, scale each conditional density by the number of observations
@@ -1815,6 +1777,13 @@ common_norm : bool
 common_grid : bool
     If True, use the same evaluation grid for each kernel density estimate.
     Only relevant with univariate data.
+{params.kde.cumulative}
+{params.kde.bw_method}
+{params.kde.bw_adjust}
+warn_singular : bool
+    If True, issue a warning when trying to estimate the density of data
+    with zero variance.
+{params.dist.log_scale}
 levels : int or vector
     Number of contour levels or values to draw contours at. A vector argument
     must have increasing values in [0, 1]. Levels correspond to iso-proportions
@@ -1823,17 +1792,15 @@ levels : int or vector
 thresh : number in [0, 1]
     Lowest iso-proportion level at which to draw a contour line. Ignored when
     ``levels`` is a vector. Only relevant with bivariate data.
-{params.kde.bw_method}
-{params.kde.bw_adjust}
-{params.dist.log_scale}
-{params.core.color}
-fill : bool or None
-    If True, fill in the area under univariate density curves or between
-    bivariate contours. If None, the default depends on ``multiple``.
-{params.core.data}
-warn_singular : bool
-    If True, issue a warning when trying to estimate the density of data
-    with zero variance.
+gridsize : int
+    Number of points on each dimension of the evaluation grid.
+{params.kde.cut}
+{params.kde.clip}
+{params.dist.legend}
+{params.dist.cbar}
+{params.dist.cbar_ax}
+{params.dist.cbar_kws}
+{params.core.ax}
 kwargs
     Other keyword arguments are passed to one of the following matplotlib
     functions:
@@ -2012,22 +1979,9 @@ Examples
 )
 
 
-@_deprecate_positional_args
 def rugplot(
-    x=None,  # Allow positional x, because behavior won't change
-    *,
-    height=.025, axis=None, ax=None,
-
-    # New parameters
-    data=None, y=None, hue=None,
-    palette=None, hue_order=None, hue_norm=None,
-    expand_margins=True,
-    legend=True,  # TODO or maybe default to False?
-
-    # Renamed parameter
-    a=None,
-
-    **kwargs
+    data=None, *, x=None, y=None, hue=None, height=.025, expand_margins=True,
+    palette=None, hue_order=None, hue_norm=None, legend=True, ax=None, **kwargs
 ):
 
     # A note: I think it would make sense to add multiple= to rugplot and allow
@@ -2040,29 +1994,45 @@ def rugplot(
     # A note, it would also be nice to offer some kind of histogram/density
     # rugplot, since alpha blending doesn't work great in the large n regime
 
-    # Handle deprecation of `a``
+    # --- Start with backwards compatability for versions < 0.11.0 ----------------
+
+    a = kwargs.pop("a", None)
+    axis = kwargs.pop("axis", None)
+
     if a is not None:
-        msg = "The `a` parameter is now called `x`. Please update your code."
-        warnings.warn(msg, FutureWarning)
-        x = a
-        del a
+        data = a
+        msg = textwrap.dedent("""\n
+        The `a` parameter has been replaced; use `x`, `y`, and/or `data` instead.
+        Please update your code; This will become an error in seaborn v0.13.0.
+        """)
+        warnings.warn(msg, UserWarning, stacklevel=2)
 
-    # Handle deprecation of "axis"
     if axis is not None:
-        msg = (
-            "The `axis` variable is no longer used and will be removed. "
-            "Instead, assign variables directly to `x` or `y`."
-        )
-        warnings.warn(msg, FutureWarning)
+        if axis == "x":
+            x = data
+        elif axis == "y":
+            y = data
+        msg = textwrap.dedent(f"""\n
+        The `axis` parameter has been deprecated; use the `{axis}` parameter instead.
+        Please update your code; this will become an error in seaborn v0.13.0.
+        """)
+        warnings.warn(msg, UserWarning, stacklevel=2)
 
-    # Handle deprecation of "vertical"
-    if kwargs.pop("vertical", axis == "y"):
-        x, y = None, x
-        msg = (
-            "Using `vertical=True` to control the orientation of the plot  "
-            "is deprecated. Instead, assign the data directly to `y`. "
-        )
-        warnings.warn(msg, FutureWarning)
+    vertical = kwargs.pop("vertical", None)
+    if vertical is not None:
+        if vertical:
+            action_taken = "assigning data to `y`."
+            if x is None:
+                data, y = y, data
+            else:
+                x, y = y, x
+        else:
+            action_taken = "assigning data to `x`."
+        msg = textwrap.dedent(f"""\n
+        The `vertical` parameter is deprecated; {action_taken}
+        This will become an error in seaborn v0.13.0; please update your code.
+        """)
+        warnings.warn(msg, UserWarning, stacklevel=2)
 
     # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - #
 
@@ -2097,26 +2067,20 @@ of individual observations in an unobtrusive way.
 
 Parameters
 ----------
-{params.core.xy}
-height : number
-    Proportion of axes extent covered by each rug element.
-axis : {{"x", "y"}}
-    Axis to draw the rug on.
-
-    .. deprecated:: 0.11.0
-       specify axis by assigning the ``x`` or ``y`` variables.
-
-{params.core.ax}
 {params.core.data}
+{params.core.xy}
 {params.core.hue}
-{params.core.palette}
-{params.core.hue_order}
-{params.core.hue_norm}
+height : float
+    Proportion of axes extent covered by each rug element. Can be negative.
 expand_margins : bool
     If True, increase the axes margins by the height of the rug to avoid
     overlap with other elements.
+{params.core.palette}
+{params.core.hue_order}
+{params.core.hue_norm}
 legend : bool
     If False, do not add a legend for semantic variables.
+{params.core.ax}
 kwargs
     Other keyword arguments are passed to
     :meth:`matplotlib.collections.LineCollection`
@@ -2180,8 +2144,8 @@ def displot(
     grid_data = p.plot_data.rename(columns=p.variables)
     grid_data = grid_data.loc[:, ~grid_data.columns.duplicated()]
 
-    col_name = p.variables.get("col", None)
-    row_name = p.variables.get("row", None)
+    col_name = p.variables.get("col")
+    row_name = p.variables.get("row")
 
     if facet_kws is None:
         facet_kws = {}
@@ -2435,154 +2399,39 @@ def distplot(a=None, bins=None, hist=True, kde=True, rug=False, fit=None,
              hist_kws=None, kde_kws=None, rug_kws=None, fit_kws=None,
              color=None, vertical=False, norm_hist=False, axlabel=None,
              label=None, ax=None, x=None):
-    """DEPRECATED: Flexibly plot a univariate distribution of observations.
+    """
+    DEPRECATED
 
-    .. warning::
-       This function is deprecated and will be removed in a future version.
-       Please adapt your code to use one of two new functions:
+    This function has been deprecated and will be removed in seaborn v0.14.0.
+    It has been replaced by :func:`histplot` and :func:`displot`, two functions
+    with a modern API and many more capabilities.
 
-       - :func:`displot`, a figure-level function with a similar flexibility
-         over the kind of plot to draw
-       - :func:`histplot`, an axes-level function for plotting histograms,
-         including with kernel density smoothing
+    For a guide to updating, please see this notebook:
 
-    This function combines the matplotlib ``hist`` function (with automatic
-    calculation of a good default bin size) with the seaborn :func:`kdeplot`
-    and :func:`rugplot` functions. It can also fit ``scipy.stats``
-    distributions and plot the estimated PDF over the data.
-
-    Parameters
-    ----------
-    a : Series, 1d-array, or list.
-        Observed data. If this is a Series object with a ``name`` attribute,
-        the name will be used to label the data axis.
-    bins : argument for matplotlib hist(), or None, optional
-        Specification of hist bins. If unspecified, as reference rule is used
-        that tries to find a useful default.
-    hist : bool, optional
-        Whether to plot a (normed) histogram.
-    kde : bool, optional
-        Whether to plot a gaussian kernel density estimate.
-    rug : bool, optional
-        Whether to draw a rugplot on the support axis.
-    fit : random variable object, optional
-        An object with `fit` method, returning a tuple that can be passed to a
-        `pdf` method a positional arguments following a grid of values to
-        evaluate the pdf on.
-    hist_kws : dict, optional
-        Keyword arguments for :meth:`matplotlib.axes.Axes.hist`.
-    kde_kws : dict, optional
-        Keyword arguments for :func:`kdeplot`.
-    rug_kws : dict, optional
-        Keyword arguments for :func:`rugplot`.
-    color : matplotlib color, optional
-        Color to plot everything but the fitted curve in.
-    vertical : bool, optional
-        If True, observed values are on y-axis.
-    norm_hist : bool, optional
-        If True, the histogram height shows a density rather than a count.
-        This is implied if a KDE or fitted density is plotted.
-    axlabel : string, False, or None, optional
-        Name for the support axis label. If None, will try to get it
-        from a.name if False, do not set a label.
-    label : string, optional
-        Legend label for the relevant component of the plot.
-    ax : matplotlib axis, optional
-        If provided, plot on this axis.
-
-    Returns
-    -------
-    ax : matplotlib Axes
-        Returns the Axes object with the plot for further tweaking.
-
-    See Also
-    --------
-    kdeplot : Show a univariate or bivariate distribution with a kernel
-              density estimate.
-    rugplot : Draw small vertical lines to show each observation in a
-              distribution.
-
-    Examples
-    --------
-
-    Show a default plot with a kernel density estimate and histogram with bin
-    size determined automatically with a reference rule:
-
-    .. plot::
-        :context: close-figs
-
-        >>> import seaborn as sns, numpy as np
-        >>> sns.set_theme(); np.random.seed(0)
-        >>> x = np.random.randn(100)
-        >>> ax = sns.distplot(x)
-
-    Use Pandas objects to get an informative axis label:
-
-    .. plot::
-        :context: close-figs
-
-        >>> import pandas as pd
-        >>> x = pd.Series(x, name="x variable")
-        >>> ax = sns.distplot(x)
-
-    Plot the distribution with a kernel density estimate and rug plot:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.distplot(x, rug=True, hist=False)
-
-    Plot the distribution with a histogram and maximum likelihood gaussian
-    distribution fit:
-
-    .. plot::
-        :context: close-figs
-
-        >>> from scipy.stats import norm
-        >>> ax = sns.distplot(x, fit=norm, kde=False)
-
-    Plot the distribution on the vertical axis:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.distplot(x, vertical=True)
-
-    Change the color of all the plot elements:
-
-    .. plot::
-        :context: close-figs
-
-        >>> sns.set_color_codes()
-        >>> ax = sns.distplot(x, color="y")
-
-    Pass specific parameters to the underlying plot functions:
-
-    .. plot::
-        :context: close-figs
-
-        >>> ax = sns.distplot(x, rug=True, rug_kws={"color": "g"},
-        ...                   kde_kws={"color": "k", "lw": 3, "label": "KDE"},
-        ...                   hist_kws={"histtype": "step", "linewidth": 3,
-        ...                             "alpha": 1, "color": "g"})
+    https://gist.github.com/mwaskom/de44147ed2974457ad6372750bbe5751
 
     """
 
     if kde and not hist:
         axes_level_suggestion = (
-            "`kdeplot` (an axes-level function for kernel density plots)."
+            "`kdeplot` (an axes-level function for kernel density plots)"
         )
     else:
         axes_level_suggestion = (
-            "`histplot` (an axes-level function for histograms)."
+            "`histplot` (an axes-level function for histograms)"
         )
 
-    msg = (
-        "`distplot` is a deprecated function and will be removed in a future version. "
-        "Please adapt your code to use either `displot` (a figure-level function with "
-        "similar flexibility) or " + axes_level_suggestion
-    )
-    warnings.warn(msg, FutureWarning)
+    msg = textwrap.dedent(f"""
+
+    `distplot` is a deprecated function and will be removed in seaborn v0.14.0.
+
+    Please adapt your code to use either `displot` (a figure-level function with
+    similar flexibility) or {axes_level_suggestion}.
+
+    For a guide to updating your code to use the new functions, please see
+    https://gist.github.com/mwaskom/de44147ed2974457ad6372750bbe5751
+    """)
+    warnings.warn(msg, UserWarning, stacklevel=2)
 
     if ax is None:
         ax = plt.gca()
@@ -2648,16 +2497,17 @@ def distplot(a=None, bins=None, hist=True, kde=True, rug=False, fit=None,
         if hist_color != color:
             hist_kws["color"] = hist_color
 
+    axis = "y" if vertical else "x"
+
     if kde:
         kde_color = kde_kws.pop("color", color)
-        kdeplot(a, vertical=vertical, ax=ax, color=kde_color, **kde_kws)
+        kdeplot(**{axis: a}, ax=ax, color=kde_color, **kde_kws)
         if kde_color != color:
             kde_kws["color"] = kde_color
 
     if rug:
         rug_color = rug_kws.pop("color", color)
-        axis = "y" if vertical else "x"
-        rugplot(a, axis=axis, ax=ax, color=rug_color, **rug_kws)
+        rugplot(**{axis: a}, ax=ax, color=rug_color, **rug_kws)
         if rug_color != color:
             rug_kws["color"] = rug_color
 

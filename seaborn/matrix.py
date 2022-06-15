@@ -22,7 +22,6 @@ from .utils import (
     to_utf8,
     _draw_figure,
 )
-from ._decorators import _deprecate_positional_args
 
 
 __all__ = ["heatmap", "clustermap"]
@@ -352,7 +351,6 @@ class _HeatMapper:
             self._annotate_heatmap(ax, mesh)
 
 
-@_deprecate_positional_args
 def heatmap(
     data, *,
     vmin=None, vmax=None, cmap=None, center=None, robust=False,
@@ -383,7 +381,7 @@ def heatmap(
         The mapping from data values to color space. If not provided, the
         default will depend on whether ``center`` is set.
     center : float, optional
-        The value at which to center the colormap when plotting divergant data.
+        The value at which to center the colormap when plotting divergent data.
         Using this parameter will change the default ``cmap`` if none is
         specified.
     robust : bool, optional
@@ -558,7 +556,7 @@ def heatmap(
     return ax
 
 
-class _DendrogramPlotter(object):
+class _DendrogramPlotter:
     """Object for drawing tree of similarities between data rows/columns"""
 
     def __init__(self, data, linkage, metric, method, axis, label, rotate):
@@ -737,7 +735,6 @@ class _DendrogramPlotter(object):
         return self
 
 
-@_deprecate_positional_args
 def dendrogram(
     data, *,
     linkage=None, axis=1, label=True, metric='euclidean',
@@ -1242,7 +1239,6 @@ class ClusterGrid(Grid):
         return self
 
 
-@_deprecate_positional_args
 def clustermap(
     data, *,
     pivot_kws=None, method='average', metric='euclidean',

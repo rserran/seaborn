@@ -79,7 +79,7 @@ from numpy import linalg
 __all__ = ['gaussian_kde']
 
 
-class gaussian_kde(object):
+class gaussian_kde:
     """Representation of a kernel-density estimate using Gaussian kernels.
 
     Kernel density estimation is a way to estimate the probability density
@@ -239,8 +239,7 @@ class gaussian_kde(object):
                 points = reshape(points, (self.d, 1))
                 m = 1
             else:
-                msg = "points have dimension %s, dataset has dimension %s" % (d,
-                    self.d)
+                msg = f"points have dimension {d}, dataset has dimension {self.d}"
                 raise ValueError(msg)
 
         output_dtype = np.common_type(self.covariance, points)
