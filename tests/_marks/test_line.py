@@ -6,7 +6,7 @@ from matplotlib.colors import same_color, to_rgba
 from numpy.testing import assert_array_equal
 
 from seaborn._core.plot import Plot
-from seaborn._marks.lines import Line, Path, Lines, Paths, Interval
+from seaborn._marks.line import Line, Path, Lines, Paths, Interval
 
 
 class TestPath:
@@ -119,18 +119,17 @@ class TestPath:
         x = y = [1, 2]
         rc = {"lines.solid_capstyle": "projecting", "lines.dash_capstyle": "round"}
 
-        with mpl.rc_context(rc):
-            p = Plot(x, y).add(Path()).plot()
-            line, = p._figure.axes[0].get_lines()
-            assert line.get_dash_capstyle() == "projecting"
+        p = Plot(x, y).add(Path()).theme(rc).plot()
+        line, = p._figure.axes[0].get_lines()
+        assert line.get_dash_capstyle() == "projecting"
 
-            p = Plot(x, y).add(Path(linestyle="--")).plot()
-            line, = p._figure.axes[0].get_lines()
-            assert line.get_dash_capstyle() == "round"
+        p = Plot(x, y).add(Path(linestyle="--")).theme(rc).plot()
+        line, = p._figure.axes[0].get_lines()
+        assert line.get_dash_capstyle() == "round"
 
-            p = Plot(x, y).add(Path({"solid_capstyle": "butt"})).plot()
-            line, = p._figure.axes[0].get_lines()
-            assert line.get_solid_capstyle() == "butt"
+        p = Plot(x, y).add(Path({"solid_capstyle": "butt"})).theme(rc).plot()
+        line, = p._figure.axes[0].get_lines()
+        assert line.get_solid_capstyle() == "butt"
 
 
 class TestLine:

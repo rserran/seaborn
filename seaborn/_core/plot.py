@@ -8,10 +8,12 @@ import sys
 import inspect
 import itertools
 import textwrap
+from contextlib import contextmanager
 from collections import abc
 from collections.abc import Callable, Generator, Hashable
-from typing import Any, Optional, cast
+from typing import Any, cast
 
+from cycler import cycler
 import pandas as pd
 from pandas import DataFrame, Series, Index
 import matplotlib as mpl
@@ -30,6 +32,8 @@ from seaborn._core.properties import PROPERTIES, Property
 from seaborn._core.typing import DataSource, VariableSpec, OrderSpec
 from seaborn._core.rules import categorical_order
 from seaborn._compat import set_scale_obj
+from seaborn.rcmod import axes_style, plotting_context
+from seaborn.palettes import color_palette
 from seaborn.external.version import Version
 
 from typing import TYPE_CHECKING
@@ -147,7 +151,8 @@ class Plot:
 
     _scales: dict[str, Scale]
     _limits: dict[str, tuple[Any, Any]]
-    _labels: dict[str, str | Callable[[str], str] | None]
+    _labels: dict[str, str | Callable[[str], str]]
+    _theme: dict[str, Any]
 
     _facet_spec: FacetSpec
     _pair_spec: PairSpec
@@ -171,17 +176,19 @@ class Plot:
             raise TypeError(err)
 
         self._data = PlotData(data, variables)
+
         self._layers = []
 
         self._scales = {}
         self._limits = {}
         self._labels = {}
+        self._theme = {}
 
         self._facet_spec = {}
         self._pair_spec = {}
 
-        self._subplot_spec = {}
         self._figure_spec = {}
+        self._subplot_spec = {}
 
         self._target = None
 
@@ -243,8 +250,9 @@ class Plot:
         new._layers.extend(self._layers)
 
         new._scales.update(self._scales)
-        new._labels.update(self._labels)
         new._limits.update(self._limits)
+        new._labels.update(self._labels)
+        new._theme.update(self._theme)
 
         new._facet_spec.update(self._facet_spec)
         new._pair_spec.update(self._pair_spec)
@@ -255,6 +263,26 @@ class Plot:
         new._target = self._target
 
         return new
+
+    def _theme_with_defaults(self) -> dict[str, Any]:
+
+        style_groups = [
+            "axes", "figure", "font", "grid", "hatch", "legend", "lines",
+            "mathtext", "markers", "patch", "savefig", "scatter",
+            "xaxis", "xtick", "yaxis", "ytick",
+        ]
+        base = {
+            k: v for k, v in mpl.rcParamsDefault.items()
+            if any(k.startswith(p) for p in style_groups)
+        }
+        theme = {
+            **base,
+            **axes_style("darkgrid"),
+            **plotting_context("notebook"),
+            "axes.prop_cycle": cycler("color", color_palette("deep")),
+        }
+        theme.update(self._theme)
+        return theme
 
     @property
     def _variables(self) -> list[str]:
@@ -573,23 +601,27 @@ class Plot:
         new._limits.update(limits)
         return new
 
-    def label(self, **labels: str | Callable[[str], str] | None) -> Plot:
+    def label(self, *, title=None, **variables: str | Callable[[str], str]) -> Plot:
         """
-        Control the labels used for variables in the plot.
+        Add or modify labels for axes, legends, and subplots.
 
-        For coordinate variables, this sets the axis label.
-        For semantic variables, it sets the legend title.
-
-        Keywords correspond to variables defined in the plot.
+        Additional keywords correspond to variables defined in the plot.
         Values can be one of the following types:
 
-        - string (used literally)
+        - string (used literally; pass "" to clear the default label)
         - function (called on the default label)
-        - None (disables the label for this variable)
+
+        For coordinate variables, the value sets the axis label.
+        For semantic variables, the value sets the legend title.
+        For faceting variables, `title=` modifies the subplot-specific label,
+        while `col=` and/or `row=` add a label for the faceting variable.
+        When using a single subplot, `title=` sets its title.
 
         """
         new = self._clone()
-        new._labels.update(labels)
+        if title is not None:
+            new._labels["title"] = title
+        new._labels.update(variables)
         return new
 
     def configure(
@@ -629,26 +661,37 @@ class Plot:
 
     # TODO def legend (ugh)
 
-    def theme(self) -> Plot:
+    def theme(self, *args: dict[str, Any]) -> Plot:
         """
         Control the default appearance of elements in the plot.
 
-        TODO
+        The API for customizing plot appearance is not yet finalized.
+        Currently, the only valid argument is a dict of matplotlib rc parameters.
+        (This dict must be passed as a positional argument.)
+
+        It is likely that this method will be enhanced in future releases.
+
         """
-        # TODO Plot-specific themes using the seaborn theming system
-        raise NotImplementedError()
         new = self._clone()
+
+        # We can skip this whole block on Python 3.8+ with positional-only syntax
+        nargs = len(args)
+        if nargs != 1:
+            err = f"theme() takes 1 positional argument, but {nargs} were given"
+            raise TypeError(err)
+
+        rc = args[0]
+        new._theme.update(rc)
+
         return new
 
-    # TODO decorate? (or similar, for various texts) alt names: label?
-
-    def save(self, fname, **kwargs) -> Plot:
+    def save(self, loc, **kwargs) -> Plot:
         """
-        Render the plot and write it to a buffer or file on disk.
+        Compile the plot and write it to a buffer or file on disk.
 
         Parameters
         ----------
-        fname : str, path, or buffer
+        loc : str, path, or buffer
             Location on disk to save the figure, or a buffer to write into.
         kwargs
             Other keyword arguments are passed through to
@@ -656,17 +699,35 @@ class Plot:
 
         """
         # TODO expose important keyword arguments in our signature?
-        self.plot().save(fname, **kwargs)
+        with theme_context(self._theme_with_defaults()):
+            self._plot().save(loc, **kwargs)
         return self
 
-    def plot(self, pyplot=False) -> Plotter:
+    def show(self, **kwargs) -> None:
         """
-        Compile the plot spec and return a Plotter object.
+        Compile and display the plot by hooking into pyplot.
         """
+        # TODO make pyplot configurable at the class level, and when not using,
+        # import IPython.display and call on self to populate cell output?
+
+        # Keep an eye on whether matplotlib implements "attaching" an existing
+        # figure to pyplot: https://github.com/matplotlib/matplotlib/pull/14024
+
+        self.plot(pyplot=True).show(**kwargs)
+
+    def plot(self, pyplot: bool = False) -> Plotter:
+        """
+        Compile the plot spec and return the Plotter object.
+        """
+        with theme_context(self._theme_with_defaults()):
+            return self._plot(pyplot)
+
+    def _plot(self, pyplot: bool = False) -> Plotter:
+
         # TODO if we have _target object, pyplot should be determined by whether it
         # is hooked into the pyplot state machine (how do we check?)
 
-        plotter = Plotter(pyplot=pyplot)
+        plotter = Plotter(pyplot=pyplot, theme=self._theme_with_defaults())
 
         # Process the variable assignments and initialize the figure
         common, layers = plotter._extract_data(self)
@@ -697,18 +758,6 @@ class Plot:
 
         return plotter
 
-    def show(self, **kwargs) -> None:
-        """
-        Render and display the plot.
-        """
-        # TODO make pyplot configurable at the class level, and when not using,
-        # import IPython.display and call on self to populate cell output?
-
-        # Keep an eye on whether matplotlib implements "attaching" an existing
-        # figure to pyplot: https://github.com/matplotlib/matplotlib/pull/14024
-
-        self.plot(pyplot=True).show(**kwargs)
-
 
 # ---- The plot compilation engine ---------------------------------------------- #
 
@@ -725,12 +774,13 @@ class Plotter:
     _layers: list[Layer]
     _figure: Figure
 
-    def __init__(self, pyplot=False):
+    def __init__(self, pyplot: bool, theme: dict[str, Any]):
 
-        self.pyplot = pyplot
-        self._legend_contents: list[
+        self._pyplot = pyplot
+        self._theme = theme
+        self._legend_contents: list[tuple[
             tuple[str, str | int], list[Artist], list[str],
-        ] = []
+        ]] = []
         self._scales: dict[str, Scale] = {}
 
     def save(self, loc, **kwargs) -> Plotter:  # TODO type args
@@ -747,7 +797,8 @@ class Plotter:
         # TODO if we did not create the Plotter with pyplot, is it possible to do this?
         # If not we should clearly raise.
         import matplotlib.pyplot as plt
-        plt.show(**kwargs)
+        with theme_context(self._theme):
+            plt.show(**kwargs)
 
     # TODO API for accessing the underlying matplotlib objects
     # TODO what else is useful in the public API for this class?
@@ -781,11 +832,12 @@ class Plotter:
 
         dpi = 96
         buffer = io.BytesIO()
-        self._figure.savefig(buffer, dpi=dpi * 2, format="png", bbox_inches="tight")
+
+        with theme_context(self._theme):
+            self._figure.savefig(buffer, dpi=dpi * 2, format="png", bbox_inches="tight")
         data = buffer.getvalue()
 
         scaling = .85 / 2
-        # w, h = self._figure.get_size_inches()
         w, h = Image.open(buffer).size
         metadata = {"width": w * scaling, "height": h * scaling}
         return data, metadata
@@ -806,16 +858,17 @@ class Plotter:
 
         return common_data, layers
 
-    def _resolve_label(self, p: Plot, var: str, auto_label: str | None) -> str | None:
+    def _resolve_label(self, p: Plot, var: str, auto_label: str | None) -> str:
 
-        label: str | None
+        label: str
         if var in p._labels:
             manual_label = p._labels[var]
             if callable(manual_label) and auto_label is not None:
                 label = manual_label(auto_label)
             else:
-                # mypy needs a lot of help here, I'm not sure why
-                label = cast(Optional[str], manual_label)
+                label = cast(str, manual_label)
+        elif auto_label is None:
+            label = ""
         else:
             label = auto_label
         return label
@@ -823,9 +876,6 @@ class Plotter:
     def _setup_figure(self, p: Plot, common: PlotData, layers: list[Layer]) -> None:
 
         # --- Parsing the faceting/pairing parameterization to specify figure grid
-
-        # TODO use context manager with theme that has been set
-        # TODO (maybe wrap THIS function with context manager; would be cleaner)
 
         subplot_spec = p._subplot_spec.copy()
         facet_spec = p._facet_spec.copy()
@@ -840,7 +890,7 @@ class Plotter:
 
         # --- Figure initialization
         self._figure = subplots.init_figure(
-            pair_spec, self.pyplot, p._figure_spec, p._target,
+            pair_spec, self._pyplot, p._figure_spec, p._target,
         )
 
         # --- Figure annotation
@@ -892,10 +942,13 @@ class Plotter:
             # Let's have what we currently call "margin titles" but properly using the
             # ax.set_title interface (see my gist)
             title_parts = []
-            for dim in ["row", "col"]:
+            for dim in ["col", "row"]:
                 if sub[dim] is not None:
-                    name = common.names.get(dim)  # TODO None = val looks bad
-                    title_parts.append(f"{name} = {sub[dim]}")
+                    val = self._resolve_label(p, "title", f"{sub[dim]}")
+                    if dim in p._labels:
+                        key = self._resolve_label(p, dim, common.names.get(dim))
+                        val = f"{key} {val}"
+                    title_parts.append(val)
 
             has_col = sub["col"] is not None
             has_row = sub["row"] is not None
@@ -910,6 +963,9 @@ class Plotter:
                 title = " | ".join(title_parts)
                 title_text = ax.set_title(title)
                 title_text.set_visible(show_title)
+            elif not (has_col or has_row):
+                title = self._resolve_label(p, "title", None)
+                title_text = ax.set_title(title)
 
     def _compute_stats(self, spec: Plot, layers: list[Layer]) -> None:
 
@@ -1402,7 +1458,7 @@ class Plotter:
 
         # First pass: Identify the values that will be shown for each variable
         schema: list[tuple[
-            tuple[str | None, str | int], list[str], tuple[list, list[str]]
+            tuple[str, str | int], list[str], tuple[list, list[str]]
         ]] = []
         schema = []
         for var in legend_vars:
@@ -1415,8 +1471,7 @@ class Plotter:
                         part_vars.append(var)
                         break
                 else:
-                    auto_title = data.names[var]
-                    title = self._resolve_label(p, var, auto_title)
+                    title = self._resolve_label(p, var, data.names[var])
                     entry = (title, data.ids[var]), [var], (values, labels)
                     schema.append(entry)
 
@@ -1436,7 +1491,7 @@ class Plotter:
         # Input list has an entry for each distinct variable in each layer
         # Output dict has an entry for each distinct variable
         merged_contents: dict[
-            tuple[str | None, str | int], tuple[list[Artist], list[str]],
+            tuple[str, str | int], tuple[list[Artist], list[str]],
         ] = {}
         for key, artists, labels in self._legend_contents:
             # Key is (name, id); we need the id to resolve variable uniqueness,
@@ -1460,7 +1515,7 @@ class Plotter:
                 self._figure,
                 handles,
                 labels,
-                title="" if name is None else name,
+                title=name,
                 loc="center left",
                 bbox_to_anchor=(.98, .55),
             )
@@ -1498,3 +1553,14 @@ class Plotter:
         # TODO this should be configurable
         if not self._figure.get_constrained_layout():
             self._figure.set_tight_layout(True)
+
+
+@contextmanager
+def theme_context(params: dict[str, Any]) -> Generator:
+    """Temporarily modify specifc matplotlib rcParams."""
+    orig = {k: mpl.rcParams[k] for k in params}
+    try:
+        mpl.rcParams.update(params)
+        yield
+    finally:
+        mpl.rcParams.update(orig)

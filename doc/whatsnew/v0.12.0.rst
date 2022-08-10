@@ -60,9 +60,13 @@ Other updates
 
 - |Feature| It is now possible to aggregate / sort a :func:`lineplot` along the y axis using `orient="y"` (:pr:`2854`).
 
-- |Feature| It is now possible to specify `estimator` as a string in :func:`barplot` and :func:`pointplot`, in addition to a callable (:pr:`2866`).
+- |Feature| Made it easier to customize :class:`FacetGrid` / :class:`PairGrid` / :class:`JointGrid` with a fluent (method-chained) style by adding `apply`/ `pipe` methods. Additionally, fixed the `tight_layout` and `refline` methods so that they return `self` (:pr:`2926`).
+
+- |Feature| Added :meth:`FacetGrid.tick_params` and :meth:`PairGrid.tick_params` to customize the appearance of the ticks, tick labels, and gridlines of all subplots at once (:pr:`2944`).
 
 - |Enhancement| Added a `width` parameter to :func:`barplot` (:pr:`2860`).
+
+- |Enhancement| It is now possible to specify `estimator` as a string in :func:`barplot` and :func:`pointplot`, in addition to a callable (:pr:`2866`).
 
 - |Enhancement| Error bars in :func:`regplot` now inherit the alpha value of the points they correspond to (:pr:`2540`).
 
@@ -92,11 +96,13 @@ Other updates
 
 - |Fix| Subplot titles will no longer be reset when calling :meth:`FacetGrid.map` or :meth:`FacetGrid.map_dataframe` (:pr:`2705`).
 
+- |Fix| Added a workaround for a matplotlib issue that caused figure-level functions to freeze when `plt.show` was called (:pr:`2925`).
+
 - |Fix| Improved robustness to numerical errors in :func:`kdeplot` (:pr:`2862`).
 
 - |Defaults| The `patch.facecolor` rc param is no longer set by :func:`set_palette` (or :func:`set_theme`). This should have no general effect, because the matplotlib default is now `"C0"` (:pr:`2906`).
 
-- |Deps| Made `scipy` an optional dependency and added `pip install seaborn[all]` as a method for ensuring the availability of compatible `scipy` and `statsmodels` libraries at install time. This has a few minor implications for existing code, which are explained in the Github pull request (:pr:`2398`).
+- |Deps| Made `scipy` an optional dependency and added `pip install seaborn[stats]` as a method for ensuring the availability of compatible `scipy` and `statsmodels` libraries at install time. This has a few minor implications for existing code, which are explained in the Github pull request (:pr:`2398`).
 
 - |Deps| Example datasets are now stored in an OS-specific cache location (as determined by `appdirs`) rather than in the user's home directory. Users should feel free to remove `~/seaborn-data` if desired (:pr:`2773`).
 

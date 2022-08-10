@@ -1,12 +1,14 @@
+import io
+import xml
 import functools
 import itertools
 import warnings
-import imghdr
 
 import numpy as np
 import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+from PIL import Image
 
 import pytest
 from pandas.testing import assert_frame_equal, assert_series_equal
@@ -859,6 +861,23 @@ class TestPlotting:
             assert_vector_equal(data["x"], long_df.loc[rows, x_i])
             assert_vector_equal(data["y"], long_df.loc[rows, y])
 
+    def test_theme_default(self):
+
+        p = Plot().plot()
+        assert mpl.colors.same_color(p._figure.axes[0].get_facecolor(), "#EAEAF2")
+
+    def test_theme_params(self):
+
+        color = "r"
+        p = Plot().theme({"axes.facecolor": color}).plot()
+        assert mpl.colors.same_color(p._figure.axes[0].get_facecolor(), color)
+
+    def test_theme_error(self):
+
+        p = Plot()
+        with pytest.raises(TypeError, match=r"theme\(\) takes 1 positional"):
+            p.theme("arg1", "arg2")
+
     def test_move(self, long_df):
 
         orig_df = long_df.copy(deep=True)
@@ -949,21 +968,31 @@ class TestPlotting:
         if not gui_backend:
             assert msg
 
-    def test_png_representation(self):
+    def test_png_repr(self):
 
         p = Plot()
         data, metadata = p._repr_png_()
+        img = Image.open(io.BytesIO(data))
 
         assert not hasattr(p, "_figure")
         assert isinstance(data, bytes)
-        assert imghdr.what("", data) == "png"
+        assert img.format == "PNG"
         assert sorted(metadata) == ["height", "width"]
         # TODO test retina scaling
 
-    @pytest.mark.xfail(reason="Plot.save not yet implemented")
     def test_save(self):
 
-        Plot().save()
+        buf = io.BytesIO()
+
+        p = Plot().save(buf)
+        assert isinstance(p, Plot)
+        img = Image.open(buf)
+        assert img.format == "PNG"
+
+        buf = io.StringIO()
+        Plot().save(buf, format="svg")
+        tag = xml.etree.ElementTree.fromstring(buf.getvalue()).tag
+        assert tag == "{http://www.w3.org/2000/svg}svg"
 
     def test_on_axes(self):
 
@@ -1096,6 +1125,34 @@ class TestPlotting:
         p = Plot(long_df, x="x", y="y", color="a").add(m).label(color=func).plot()
         assert p._figure.legends[0].get_title().get_text() == label
 
+    def test_labels_facets(self):
+
+        data = {"a": ["b", "c"], "x": ["y", "z"]}
+        p = Plot(data).facet("a", "x").label(col=str.capitalize, row="$x$").plot()
+        axs = np.reshape(p._figure.axes, (2, 2))
+        for (i, j), ax in np.ndenumerate(axs):
+            expected = f"A {data['a'][j]} | $x$ {data['x'][i]}"
+            assert ax.get_title() == expected
+
+    def test_title_single(self):
+
+        label = "A"
+        p = Plot().label(title=label).plot()
+        assert p._figure.axes[0].get_title() == label
+
+    def test_title_facet_function(self):
+
+        titles = ["a", "b"]
+        p = Plot().facet(titles).label(title=str.capitalize).plot()
+        for i, ax in enumerate(p._figure.axes):
+            assert ax.get_title() == titles[i].upper()
+
+        cols, rows = ["a", "b"], ["x", "y"]
+        p = Plot().facet(cols, rows).label(title=str.capitalize).plot()
+        for i, ax in enumerate(p._figure.axes):
+            expected = " | ".join([cols[i % 2].upper(), rows[i // 2].upper()])
+            assert ax.get_title() == expected
+
 
 class TestFacetInterface:
 
@@ -1123,7 +1180,7 @@ class TestFacetInterface:
         for subplot, level in zip(p._subplots, order):
             assert subplot[dim] == level
             assert subplot[other_dim] is None
-            assert subplot["ax"].get_title() == f"{key} = {level}"
+            assert subplot["ax"].get_title() == f"{level}"
             assert_gridspec_shape(subplot["ax"], **{f"n{dim}s": len(order)})
 
     def test_1d(self, long_df, dim):
@@ -1159,7 +1216,7 @@ class TestFacetInterface:
             assert subplot["row"] == row_level
             assert subplot["col"] == col_level
             assert subplot["axes"].get_title() == (
-                f"{variables['row']} = {row_level} | {variables['col']} = {col_level}"
+                f"{col_level} | {row_level}"
             )
             assert_gridspec_shape(
                 subplot["axes"], len(levels["row"]), len(levels["col"])
@@ -1346,7 +1403,7 @@ class TestPairInterface:
             ax = subplot["ax"]
             assert ax.get_xlabel() == x
             assert ax.get_ylabel() == y_i
-            assert ax.get_title() == f"{col} = {col_i}"
+            assert ax.get_title() == f"{col_i}"
             assert_gridspec_shape(ax, len(y), len(facet_levels))
 
     @pytest.mark.parametrize("variables", [("rows", "y"), ("columns", "x")])
@@ -1734,7 +1791,7 @@ class TestLegend:
 
         labels = list(np.unique(s))  # assumes sorted order
 
-        assert e[0] == (None, id(s))
+        assert e[0] == ("", id(s))
         assert e[-1] == labels
 
         artists = e[1]

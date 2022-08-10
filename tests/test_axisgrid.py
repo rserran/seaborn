@@ -653,14 +653,14 @@ class TestFacetGrid:
 
         g = ag.FacetGrid(self.df, row="a", col="b")
         g.refline()
-        for ax in g.axes.ravel():
+        for ax in g.axes.flat:
             assert not ax.lines
 
         refx = refy = 0.5
         hline = np.array([[0, refy], [1, refy]])
         vline = np.array([[refx, 0], [refx, 1]])
         g.refline(x=refx, y=refy)
-        for ax in g.axes.ravel():
+        for ax in g.axes.flat:
             assert ax.lines[0].get_color() == '.5'
             assert ax.lines[0].get_linestyle() == '--'
             assert len(ax.lines) == 2
@@ -672,6 +672,42 @@ class TestFacetGrid:
         npt.assert_array_equal(g.axes[0, 0].lines[-1].get_xydata(), vline)
         assert g.axes[0, 0].lines[-1].get_color() == color
         assert g.axes[0, 0].lines[-1].get_linestyle() == linestyle
+
+    def test_apply(self, long_df):
+
+        def f(grid, color):
+            grid.figure.set_facecolor(color)
+
+        color = (.1, .6, .3, .9)
+        g = ag.FacetGrid(long_df)
+        res = g.apply(f, color)
+        assert res is g
+        assert g.figure.get_facecolor() == color
+
+    def test_pipe(self, long_df):
+
+        def f(grid, color):
+            grid.figure.set_facecolor(color)
+            return color
+
+        color = (.1, .6, .3, .9)
+        g = ag.FacetGrid(long_df)
+        res = g.pipe(f, color)
+        assert res == color
+        assert g.figure.get_facecolor() == color
+
+    def test_tick_params(self):
+
+        g = ag.FacetGrid(self.df, row="a", col="b")
+        color = "blue"
+        pad = 3
+        g.tick_params(pad=pad, color=color)
+        for ax in g.axes.flat:
+            for axis in ["xaxis", "yaxis"]:
+                for tick in getattr(ax, axis).get_major_ticks():
+                    assert mpl.colors.same_color(tick.tick1line.get_color(), color)
+                    assert mpl.colors.same_color(tick.tick2line.get_color(), color)
+                    assert tick.get_pad() == pad
 
 
 class TestPairGrid:
@@ -1407,6 +1443,19 @@ class TestPairGrid:
 
         g2 = ag.pairplot(self.df)
         assert g2.legend is None
+
+    def test_tick_params(self):
+
+        g = ag.PairGrid(self.df)
+        color = "red"
+        pad = 3
+        g.tick_params(pad=pad, color=color)
+        for ax in g.axes.flat:
+            for axis in ["xaxis", "yaxis"]:
+                for tick in getattr(ax, axis).get_major_ticks():
+                    assert mpl.colors.same_color(tick.tick1line.get_color(), color)
+                    assert mpl.colors.same_color(tick.tick2line.get_color(), color)
+                    assert tick.get_pad() == pad
 
 
 class TestJointGrid:
