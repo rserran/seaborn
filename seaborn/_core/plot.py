@@ -90,12 +90,22 @@ default = Default()
 @contextmanager
 def theme_context(params: dict[str, Any]) -> Generator:
     """Temporarily modify specifc matplotlib rcParams."""
-    orig = {k: mpl.rcParams[k] for k in params}
+    orig_params = {k: mpl.rcParams[k] for k in params}
+    color_codes = "bgrmyck"
+    nice_colors = [*color_palette("deep6"), (.15, .15, .15)]
+    orig_colors = [mpl.colors.colorConverter.colors[x] for x in color_codes]
+    # TODO how to allow this to reflect the color cycle when relevant?
     try:
         mpl.rcParams.update(params)
+        for (code, color) in zip(color_codes, nice_colors):
+            mpl.colors.colorConverter.colors[code] = color
+            mpl.colors.colorConverter.cache[code] = color
         yield
     finally:
-        mpl.rcParams.update(orig)
+        mpl.rcParams.update(orig_params)
+        for (code, color) in zip(color_codes, orig_colors):
+            mpl.colors.colorConverter.colors[code] = color
+            mpl.colors.colorConverter.cache[code] = color
 
 
 def build_plot_signature(cls):
@@ -120,7 +130,8 @@ def build_plot_signature(cls):
     cls.__signature__ = new_sig
 
     known_properties = textwrap.fill(
-        ", ".join(PROPERTIES), 78, subsequent_indent=" " * 8,
+        ", ".join([f"|{p}|" for p in PROPERTIES]),
+        width=78, subsequent_indent=" " * 8,
     )
 
     if cls.__doc__ is not None:  # support python -OO mode
@@ -683,7 +694,7 @@ class Plot:
         self,
         *,
         size: tuple[float, float] | Default = default,
-        algo: str | None | Default = default,
+        engine: str | None | Default = default,
     ) -> Plot:
         """
         Control the figure size and layout.
@@ -699,8 +710,8 @@ class Plot:
         size : (width, height)
             Size of the resulting figure, in inches. Size is inclusive of legend when
             using pyplot, but not otherwise.
-        algo : {{"tight", "constrained", None}}
-            Name of algorithm for automatically adjusting the layout to remove overlap.
+        engine : {{"tight", "constrained", None}}
+            Name of method for automatically adjusting the layout to remove overlap.
             The default depends on whether :meth:`Plot.on` is used.
 
         Examples
@@ -717,8 +728,8 @@ class Plot:
 
         if size is not default:
             new._figure_spec["figsize"] = size
-        if algo is not default:
-            new._layout_spec["algo"] = algo
+        if engine is not default:
+            new._layout_spec["engine"] = engine
 
         return new
 
@@ -1645,6 +1656,6 @@ class Plotter:
                         hi = cast(float, hi) + 0.5
                     ax.set(**{f"{axis}lim": (lo, hi)})
 
-        algo_default = None if p._target is not None else "tight"
-        layout_algo = p._layout_spec.get("algo", algo_default)
-        set_layout_engine(self._figure, layout_algo)
+        engine_default = None if p._target is not None else "tight"
+        layout_engine = p._layout_spec.get("engine", engine_default)
+        set_layout_engine(self._figure, layout_engine)
