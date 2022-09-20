@@ -5,11 +5,14 @@ on:
     branches: [master, v0.*]
   pull_request:
     branches: master
+  schedule:
+    - cron:  '0 6 * * 1,4' # Each Monday and Thursday at 06:00 UTC
   workflow_dispatch:
 
 env:
   NB_KERNEL: python
   MPLBACKEND: Agg
+  SEABORN_DATA: ~/seaborn-data
 
 jobs:
   build-docs:
@@ -21,22 +24,27 @@ jobs:
         uses: actions/setup-python@v3
         with:
           python-version: "3.10"
-          cache: "pip"
 
       - name: Install seaborn
         run: |
           pip install --upgrade pip
-          pip install .[stats] -r ci/utils.txt
+          pip install .[stats,docs]
 
-      - name: Install doc tools
+      - name: Install pandoc
         run: |
-          pip install -r doc/requirements.txt
           sudo apt-get install pandoc
 
-      - name: Build docs
+      - name: Cache datasets
         run: |
-          make -C doc -j `nproc` notebooks
-          make -C doc html
+          git clone https://github.com/mwaskom/seaborn-data.git
+
+      - name: Build docs
+        env:
+          SPHINXOPTS: -j `nproc`
+        run: |
+          cd doc
+          make -j `nproc` notebooks
+          make html
 
 
   run-tests:
@@ -45,17 +53,14 @@ jobs:
     strategy:
       matrix:
         python: ["3.7", "3.8", "3.9", "3.10"]
-        target: [test]
         install: [full]
         deps: [latest]
 
         include:
           - python: "3.7"
-            target: unittests
             install: full
             deps: pinned
           - python: "3.10"
-            target: unittests
             install: light
             deps: latest
 
@@ -66,20 +71,16 @@ jobs:
         uses: actions/setup-python@v3
         with:
           python-version: ${{ matrix.python }}
-          cache: "pip"
 
       - name: Install seaborn
         run: |
           pip install --upgrade pip wheel
-          if [[ ${{matrix.install}} == 'full' ]]; then EXTRAS='[stats]'; fi
+          if [[ ${{matrix.install}} == 'full' ]]; then EXTRAS=',stats'; fi
           if [[ ${{matrix.deps }} == 'pinned' ]]; then DEPS='-r ci/deps_pinned.txt'; fi
-          pip install .$EXTRAS $DEPS -r ci/utils.txt
-
-      - name: Cache datastes
-        run: python ci/cache_test_datasets.py
+          pip install .[dev$EXTRAS] $DEPS
 
       - name: Run tests
-        run: make ${{ matrix.target }}
+        run: make test
 
       - name: Upload coverage
         uses: codecov/codecov-action@v2
