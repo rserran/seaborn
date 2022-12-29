@@ -90,6 +90,12 @@ class TestContinuous:
         s = Continuous((2, 3), (10, 100), "log")._setup(x, IntervalProperty())
         assert_array_equal(s(x), [1, 2, 3])
 
+    def test_interval_with_bools(self):
+
+        x = pd.Series([True, False, False])
+        s = Continuous()._setup(x, IntervalProperty())
+        assert_array_equal(s(x), [1, 0, 0])
+
     def test_color_defaults(self, x):
 
         cmap = color_palette("ch:", as_cmap=True)
@@ -448,7 +454,7 @@ class TestNominal:
     def test_color_unknown_palette(self, x):
 
         pal = "not_a_palette"
-        err = f"{pal} is not a valid palette name"
+        err = f"'{pal}' is not a valid palette name"
         with pytest.raises(ValueError, match=err):
             Nominal(pal)._setup(x, Color())
 
@@ -554,6 +560,12 @@ class TestNominal:
 
         s = Nominal((2, 4))._setup(x, MockProperty())
         assert_array_equal(s(x), [4, np.sqrt(10), 2, np.sqrt(10)])
+
+    def test_empty_data(self):
+
+        x = pd.Series([], dtype=object, name="x")
+        s = Nominal()._setup(x, Coordinate())
+        assert_array_equal(s(x), [])
 
 
 class TestTemporal:
