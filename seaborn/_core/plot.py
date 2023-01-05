@@ -41,7 +41,7 @@ from seaborn._core.rules import categorical_order
 from seaborn._compat import set_scale_obj, set_layout_engine
 from seaborn.rcmod import axes_style, plotting_context
 from seaborn.palettes import color_palette
-from seaborn.external.version import Version
+from seaborn.utils import _version_predates
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -1238,7 +1238,7 @@ class Plotter:
             # https://github.com/matplotlib/matplotlib/pull/18308
             # This only affects us when sharing *paired* axes. This is a novel/niche
             # behavior, so we will raise rather than hack together a workaround.
-            if axis is not None and Version(mpl.__version__) < Version("3.4.0"):
+            if axis is not None and _version_predates(mpl, "3.4"):
                 paired_axis = axis in p._pair_spec.get("structure", {})
                 cat_scale = isinstance(scale, Nominal)
                 ok_dim = {"x": "col", "y": "row"}[axis]
@@ -1659,16 +1659,8 @@ class Plotter:
                         hi = cast(float, hi) + 0.5
                     ax.set(**{f"{axis}lim": (lo, hi)})
 
-                # Nominal scale special-casing
-                if isinstance(self._scales.get(axis_key), Nominal):
-                    axis_obj.grid(False, which="both")
-                    if axis_key not in p._limits:
-                        nticks = len(axis_obj.get_major_ticks())
-                        lo, hi = -.5, nticks - .5
-                        if axis == "y":
-                            lo, hi = hi, lo
-                        set_lim = getattr(ax, f"set_{axis}lim")
-                        set_lim(lo, hi, auto=None)
+                if axis_key in self._scales:  # TODO when would it not be?
+                    self._scales[axis_key]._finalize(p, axis_obj)
 
         engine_default = None if p._target is not None else "tight"
         layout_engine = p._layout_spec.get("engine", engine_default)

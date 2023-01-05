@@ -8,9 +8,11 @@ import pytest
 from numpy.testing import assert_array_equal
 from pandas.testing import assert_series_equal
 
+from seaborn._core.plot import Plot
 from seaborn._core.scales import (
     Nominal,
     Continuous,
+    Boolean,
     Temporal,
     PseudoAxis,
 )
@@ -23,7 +25,7 @@ from seaborn._core.properties import (
     Fill,
 )
 from seaborn.palettes import color_palette
-from seaborn.external.version import Version
+from seaborn.utils import _version_predates
 
 
 class TestContinuous:
@@ -567,6 +569,22 @@ class TestNominal:
         s = Nominal()._setup(x, Coordinate())
         assert_array_equal(s(x), [])
 
+    @pytest.mark.skipif(
+        _version_predates(mpl, "3.4.0"),
+        reason="Test failing on older matplotlib for unclear reasons",
+    )
+    def test_finalize(self, x):
+
+        ax = mpl.figure.Figure().subplots()
+        s = Nominal()._setup(x, Coordinate(), ax.yaxis)
+        s._finalize(Plot(), ax.yaxis)
+
+        levels = x.unique()
+        assert ax.get_ylim() == (len(levels) - .5, -.5)
+        assert_array_equal(ax.get_yticks(), list(range(len(levels))))
+        for i, expected in enumerate(levels):
+            assert ax.yaxis.major.formatter(i) == expected
+
 
 class TestTemporal:
 
@@ -631,10 +649,6 @@ class TestTemporal:
         assert isinstance(locator, mpl.dates.AutoDateLocator)
         assert isinstance(formatter, mpl.dates.AutoDateFormatter)
 
-    @pytest.mark.skipif(
-        Version(mpl.__version__) < Version("3.3.0"),
-        reason="Test requires new matplotlib date epoch."
-    )
     def test_tick_locator(self, t):
 
         locator = mpl.dates.YearLocator(month=3, day=15)
@@ -651,10 +665,6 @@ class TestTemporal:
         locator = ax.xaxis.get_major_locator()
         assert set(locator.maxticks.values()) == {n}
 
-    @pytest.mark.skipif(
-        Version(mpl.__version__) < Version("3.3.0"),
-        reason="Test requires new matplotlib date epoch."
-    )
     def test_label_formatter(self, t):
 
         formatter = mpl.dates.DateFormatter("%Y")
@@ -670,3 +680,126 @@ class TestTemporal:
         Temporal().label(concise=True)._setup(t, Coordinate(), ax.xaxis)
         formatter = ax.xaxis.get_major_formatter()
         assert isinstance(formatter, mpl.dates.ConciseDateFormatter)
+
+
+class TestBoolean:
+
+    @pytest.fixture
+    def x(self):
+        return pd.Series([True, False, False, True], name="x", dtype=bool)
+
+    def test_coordinate(self, x):
+
+        s = Boolean()._setup(x, Coordinate())
+        assert_array_equal(s(x), x.astype(float))
+
+    def test_coordinate_axis(self, x):
+
+        ax = mpl.figure.Figure().subplots()
+        s = Boolean()._setup(x, Coordinate(), ax.xaxis)
+        assert_array_equal(s(x), x.astype(float))
+        f = ax.xaxis.get_major_formatter()
+        assert f.format_ticks([0, 1]) == ["False", "True"]
+
+    @pytest.mark.parametrize(
+        "dtype,value",
+        [
+            (object, np.nan),
+            (object, None),
+            ("boolean", pd.NA),
+        ]
+    )
+    def test_coordinate_missing(self, x, dtype, value):
+
+        x = x.astype(dtype)
+        x[2] = value
+        s = Boolean()._setup(x, Coordinate())
+        assert_array_equal(s(x), x.astype(float))
+
+    def test_color_defaults(self, x):
+
+        s = Boolean()._setup(x, Color())
+        cs = color_palette()
+        expected = [cs[int(x_i)] for x_i in ~x]
+        assert_array_equal(s(x), expected)
+
+    def test_color_list_palette(self, x):
+
+        cs = color_palette("crest", 2)
+        s = Boolean(cs)._setup(x, Color())
+        expected = [cs[int(x_i)] for x_i in ~x]
+        assert_array_equal(s(x), expected)
+
+    def test_color_tuple_palette(self, x):
+
+        cs = tuple(color_palette("crest", 2))
+        s = Boolean(cs)._setup(x, Color())
+        expected = [cs[int(x_i)] for x_i in ~x]
+        assert_array_equal(s(x), expected)
+
+    def test_color_dict_palette(self, x):
+
+        cs = color_palette("crest", 2)
+        pal = {True: cs[0], False: cs[1]}
+        s = Boolean(pal)._setup(x, Color())
+        expected = [pal[x_i] for x_i in x]
+        assert_array_equal(s(x), expected)
+
+    def test_object_defaults(self, x):
+
+        vs = ["x", "y", "z"]
+
+        class MockProperty(ObjectProperty):
+            def _default_values(self, n):
+                return vs[:n]
+
+        s = Boolean()._setup(x, MockProperty())
+        expected = [vs[int(x_i)] for x_i in ~x]
+        assert s(x) == expected
+
+    def test_object_list(self, x):
+
+        vs = ["x", "y"]
+        s = Boolean(vs)._setup(x, ObjectProperty())
+        expected = [vs[int(x_i)] for x_i in ~x]
+        assert s(x) == expected
+
+    def test_object_dict(self, x):
+
+        vs = {True: "x", False: "y"}
+        s = Boolean(vs)._setup(x, ObjectProperty())
+        expected = [vs[x_i] for x_i in x]
+        assert s(x) == expected
+
+    def test_fill(self, x):
+
+        s = Boolean()._setup(x, Fill())
+        assert_array_equal(s(x), x)
+
+    def test_interval_defaults(self, x):
+
+        vs = (1, 2)
+
+        class MockProperty(IntervalProperty):
+            _default_range = vs
+
+        s = Boolean()._setup(x, MockProperty())
+        expected = [vs[int(x_i)] for x_i in x]
+        assert_array_equal(s(x), expected)
+
+    def test_interval_tuple(self, x):
+
+        vs = (3, 5)
+        s = Boolean(vs)._setup(x, IntervalProperty())
+        expected = [vs[int(x_i)] for x_i in x]
+        assert_array_equal(s(x), expected)
+
+    def test_finalize(self, x):
+
+        ax = mpl.figure.Figure().subplots()
+        s = Boolean()._setup(x, Coordinate(), ax.xaxis)
+        s._finalize(Plot(), ax.xaxis)
+        assert ax.get_xlim() == (1.5, -.5)
+        assert_array_equal(ax.get_xticks(), [0, 1])
+        assert ax.xaxis.major.formatter(0) == "False"
+        assert ax.xaxis.major.formatter(1) == "True"
