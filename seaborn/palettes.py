@@ -388,7 +388,7 @@ def mpl_palette(name, n_colors=6, as_cmap=False):
 
     Examples
     --------
-    .. include: ../docstrings/mpl_palette.rst
+    .. include:: ../docstrings/mpl_palette.rst
 
     """
     if name.endswith("_d"):
@@ -839,4 +839,3 @@ def set_color_codes(palette="deep"):
     for code, color in zip("bgrmyck", colors):
         rgb = mpl.colors.colorConverter.to_rgb(color)
         mpl.colors.colorConverter.colors[code] = rgb
-        mpl.colors.colorConverter.cache[code] = rgb
