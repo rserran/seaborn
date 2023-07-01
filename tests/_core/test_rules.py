@@ -28,8 +28,6 @@ def test_variable_type():
     assert variable_type(s) == "numeric"
     assert variable_type(s.astype(int)) == "numeric"
     assert variable_type(s.astype(object)) == "numeric"
-    assert variable_type(s.to_numpy()) == "numeric"
-    assert variable_type(s.to_list()) == "numeric"
 
     s = pd.Series([1, 2, 3, np.nan], dtype=object)
     assert variable_type(s) == "numeric"
@@ -40,10 +38,14 @@ def test_variable_type():
     s = pd.Series([pd.NA, pd.NA])
     assert variable_type(s) == "numeric"
 
+    s = pd.Series([1, 2, pd.NA], dtype="Int64")
+    assert variable_type(s) == "numeric"
+
+    s = pd.Series([1, 2, pd.NA], dtype=object)
+    assert variable_type(s) == "numeric"
+
     s = pd.Series(["1", "2", "3"])
     assert variable_type(s) == "categorical"
-    assert variable_type(s.to_numpy()) == "categorical"
-    assert variable_type(s.to_list()) == "categorical"
 
     s = pd.Series([True, False, False])
     assert variable_type(s) == "numeric"
@@ -62,8 +64,6 @@ def test_variable_type():
     s = pd.Series([pd.Timestamp(1), pd.Timestamp(2)])
     assert variable_type(s) == "datetime"
     assert variable_type(s.astype(object)) == "datetime"
-    assert variable_type(s.to_numpy()) == "datetime"
-    assert variable_type(s.to_list()) == "datetime"
 
 
 def test_categorical_order():

@@ -1128,7 +1128,7 @@ class VectorPlotter:
                             # it is similar to GH2419, but more complicated because
                             # supporting `order` in categorical plots is tricky
                             orig = orig[orig.isin(self.var_levels[var])]
-                    comp = pd.to_numeric(converter.convert_units(orig))
+                    comp = pd.to_numeric(converter.convert_units(orig)).astype(float)
                     if converter.get_scale() == "log":
                         comp = np.log10(comp)
                     parts.append(pd.Series(comp, orig.index, name=orig.name))
@@ -1495,14 +1495,18 @@ def variable_type(vector, boolean_type="numeric"):
     var_type : 'numeric', 'categorical', or 'datetime'
         Name identifying the type of data in the vector.
     """
+    vector = pd.Series(vector)
 
     # If a categorical dtype is set, infer categorical
-    if isinstance(getattr(vector, 'dtype', None), pd.CategoricalDtype):
+    if isinstance(vector.dtype, pd.CategoricalDtype):
         return VariableType("categorical")
 
     # Special-case all-na data, which is always "numeric"
     if pd.isna(vector).all():
         return VariableType("numeric")
+
+    # At this point, drop nans to simplify further type inference
+    vector = vector.dropna()
 
     # Special-case binary/boolean data, allow caller to determine
     # This triggers a numpy warning when vector has strings/objects
@@ -1516,7 +1520,7 @@ def variable_type(vector, boolean_type="numeric"):
         warnings.simplefilter(
             action='ignore', category=(FutureWarning, DeprecationWarning)
         )
-        if np.isin(vector, [0, 1, np.nan]).all():
+        if np.isin(vector, [0, 1]).all():
             return VariableType(boolean_type)
 
     # Defer to positive pandas tests
