@@ -13,6 +13,7 @@ from .utils import (
     adjust_legend_subtitles,
     _default_color,
     _deprecate_ci,
+    _get_transform_functions,
 )
 from ._statistics import EstimateAggregator
 from .axisgrid import FacetGrid, _facet_docs
@@ -274,7 +275,9 @@ class _RelationalPlotter(VectorPlotter):
     ):
 
         brief_ticks = 6
-        mapper = getattr(self, f"_{var}_map")
+        mapper = getattr(self, f"_{var}_map", None)
+        if mapper is None:
+            return
 
         brief = mapper.map_type == "numeric" and (
             verbosity == "brief"
@@ -410,11 +413,11 @@ class _LinePlotter(_RelationalPlotter):
                 sub_data[f"{other}min"] = np.nan
                 sub_data[f"{other}max"] = np.nan
 
-            # TODO this is pretty ad hoc ; see GH2409
+            # Apply inverse axis scaling
             for var in "xy":
-                if self._log_scaled(var):
-                    for col in sub_data.filter(regex=f"^{var}"):
-                        sub_data[col] = np.power(10, sub_data[col])
+                _, inv = _get_transform_functions(ax, var)
+                for col in sub_data.filter(regex=f"^{var}"):
+                    sub_data[col] = inv(sub_data[col])
 
             # --- Draw the main line(s)
 
@@ -510,7 +513,7 @@ class _ScatterPlotter(_RelationalPlotter):
 
         # --- Determine the visual attributes of the plot
 
-        data = self.plot_data.dropna()
+        data = self.comp_data.dropna()
         if data.empty:
             return
 
@@ -518,6 +521,11 @@ class _ScatterPlotter(_RelationalPlotter):
         empty = np.full(len(data), np.nan)
         x = data.get("x", empty)
         y = data.get("y", empty)
+
+        # Apply inverse scaling to the coordinate variables
+        _, inv_x = _get_transform_functions(ax, "x")
+        _, inv_y = _get_transform_functions(ax, "y")
+        x, y = inv_x(x), inv_y(y)
 
         if "style" in self.variables:
             # Use a representative marker so scatter sets the edgecolor
@@ -581,9 +589,9 @@ def lineplot(
     # Handle deprecation of ci parameter
     errorbar = _deprecate_ci(errorbar, ci)
 
-    variables = _LinePlotter.get_semantics(locals())
     p = _LinePlotter(
-        data=data, variables=variables,
+        data=data,
+        variables=dict(x=x, y=y, hue=hue, size=size, style=style, units=units),
         estimator=estimator, n_boot=n_boot, seed=seed, errorbar=errorbar,
         sort=sort, orient=orient, err_style=err_style, err_kws=err_kws,
         legend=legend,
@@ -705,8 +713,11 @@ def scatterplot(
     **kwargs
 ):
 
-    variables = _ScatterPlotter.get_semantics(locals())
-    p = _ScatterPlotter(data=data, variables=variables, legend=legend)
+    p = _ScatterPlotter(
+        data=data,
+        variables=dict(x=x, y=y, hue=hue, size=size, style=style),
+        legend=legend
+    )
 
     p.map_hue(palette=palette, order=hue_order, norm=hue_norm)
     p.map_size(sizes=sizes, order=size_order, norm=size_norm)
@@ -802,13 +813,13 @@ def relplot(
 
     if kind == "scatter":
 
-        plotter = _ScatterPlotter
+        Plotter = _ScatterPlotter
         func = scatterplot
         markers = True if markers is None else markers
 
     elif kind == "line":
 
-        plotter = _LinePlotter
+        Plotter = _LinePlotter
         func = lineplot
         dashes = True if dashes is None else dashes
 
@@ -826,9 +837,15 @@ def relplot(
         kwargs.pop("ax")
 
     # Use the full dataset to map the semantics
-    p = plotter(
+    variables = dict(x=x, y=y, hue=hue, size=size, style=style)
+    if kind == "line":
+        variables["units"] = units
+    elif units is not None:
+        msg = "The `units` parameter of `relplot` has no effect with kind='scatter'"
+        warnings.warn(msg, stacklevel=2)
+    p = Plotter(
         data=data,
-        variables=plotter.get_semantics(locals()),
+        variables=variables,
         legend=legend,
     )
     p.map_hue(palette=palette, order=hue_order, norm=hue_norm)
@@ -864,7 +881,6 @@ def relplot(
     # Now extract the data that would be used to draw a single plot
     variables = p.variables
     plot_data = p.plot_data
-    plot_semantics = p.semantics
 
     # Define the common plotting parameters
     plot_kws = dict(
@@ -878,16 +894,13 @@ def relplot(
         plot_kws.pop("dashes")
 
     # Add the grid semantics onto the plotter
-    grid_semantics = "row", "col"
-    p.semantics = plot_semantics + grid_semantics
-    p.assign_variables(
-        data=data,
-        variables=dict(
-            x=x, y=y,
-            hue=hue, size=size, style=style, units=units,
-            row=row, col=col,
-        ),
+    grid_variables = dict(
+        x=x, y=y, row=row, col=col,
+        hue=hue, size=size, style=style,
     )
+    if kind == "line":
+        grid_variables["units"] = units
+    p.assign_variables(data, grid_variables)
 
     # Define the named variables for plotting on each facet
     # Rename the variables with a leading underscore to avoid
@@ -901,7 +914,7 @@ def relplot(
         # Handle faceting variables that lack name information
         if var in p.variables and p.variables[var] is None:
             p.variables[var] = f"_{var}_"
-    grid_kws = {v: p.variables.get(v) for v in grid_semantics}
+    grid_kws = {v: p.variables.get(v) for v in ["row", "col"]}
 
     # Rename the columns of the plot_data structure appropriately
     new_cols = plot_variables.copy()
@@ -1034,5 +1047,4 @@ Examples
     narrative=_relational_narrative,
     params=_param_docs,
     returns=_core_docs["returns"],
-    seealso=_core_docs["seealso"],
 )

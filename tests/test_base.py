@@ -5,7 +5,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 import pytest
-from numpy.testing import assert_array_equal
+from numpy.testing import assert_array_equal, assert_array_almost_equal
 from pandas.testing import assert_frame_equal
 
 from seaborn.axisgrid import FacetGrid
@@ -57,26 +57,13 @@ class TestSemanticMapping:
 
 class TestHueMapping:
 
-    def test_init_from_map(self, long_df):
-
-        p_orig = VectorPlotter(
-            data=long_df,
-            variables=dict(x="x", y="y", hue="a")
-        )
-        palette = "Set2"
-        p = HueMapping.map(p_orig, palette=palette)
-        assert p is p_orig
-        assert isinstance(p._hue_map, HueMapping)
-        assert p._hue_map.palette == palette
-
     def test_plotter_default_init(self, long_df):
 
         p = VectorPlotter(
             data=long_df,
             variables=dict(x="x", y="y"),
         )
-        assert isinstance(p._hue_map, HueMapping)
-        assert p._hue_map.map_type is None
+        assert not hasattr(p, "_hue_map")
 
         p = VectorPlotter(
             data=long_df,
@@ -85,16 +72,15 @@ class TestHueMapping:
         assert isinstance(p._hue_map, HueMapping)
         assert p._hue_map.map_type == p.var_types["hue"]
 
-    def test_plotter_reinit(self, long_df):
+    def test_plotter_customization(self, long_df):
 
-        p_orig = VectorPlotter(
+        p = VectorPlotter(
             data=long_df,
             variables=dict(x="x", y="y", hue="a"),
         )
         palette = "muted"
         hue_order = ["b", "a", "c"]
-        p = p_orig.map_hue(palette=palette, order=hue_order)
-        assert p is p_orig
+        p.map_hue(palette=palette, order=hue_order)
         assert p._hue_map.palette == palette
         assert p._hue_map.levels == hue_order
 
@@ -333,27 +319,13 @@ class TestHueMapping:
 
 class TestSizeMapping:
 
-    def test_init_from_map(self, long_df):
-
-        p_orig = VectorPlotter(
-            data=long_df,
-            variables=dict(x="x", y="y", size="a")
-        )
-        sizes = 1, 6
-        p = SizeMapping.map(p_orig, sizes=sizes)
-        assert p is p_orig
-        assert isinstance(p._size_map, SizeMapping)
-        assert min(p._size_map.lookup_table.values()) == sizes[0]
-        assert max(p._size_map.lookup_table.values()) == sizes[1]
-
     def test_plotter_default_init(self, long_df):
 
         p = VectorPlotter(
             data=long_df,
             variables=dict(x="x", y="y"),
         )
-        assert isinstance(p._size_map, SizeMapping)
-        assert p._size_map.map_type is None
+        assert not hasattr(p, "_size_map")
 
         p = VectorPlotter(
             data=long_df,
@@ -362,16 +334,15 @@ class TestSizeMapping:
         assert isinstance(p._size_map, SizeMapping)
         assert p._size_map.map_type == p.var_types["size"]
 
-    def test_plotter_reinit(self, long_df):
+    def test_plotter_customization(self, long_df):
 
-        p_orig = VectorPlotter(
+        p = VectorPlotter(
             data=long_df,
             variables=dict(x="x", y="y", size="a"),
         )
         sizes = [1, 4, 2]
         size_order = ["b", "a", "c"]
-        p = p_orig.map_size(sizes=sizes, order=size_order)
-        assert p is p_orig
+        p.map_size(sizes=sizes, order=size_order)
         assert p._size_map.lookup_table == dict(zip(size_order, sizes))
         assert p._size_map.levels == size_order
 
@@ -480,20 +451,16 @@ class TestSizeMapping:
         with pytest.raises(ValueError):
             SizeMapping(p, sizes="bad_size")
 
+    def test_array_palette_deprecation(self, long_df):
+
+        p = VectorPlotter(long_df, {"y": "y", "hue": "s"})
+        pal = mpl.cm.Blues([.3, .8])[:, :3]
+        with pytest.warns(UserWarning, match="Numpy array is not a supported type"):
+            m = HueMapping(p, pal)
+        assert m.palette == pal.tolist()
+
 
 class TestStyleMapping:
-
-    def test_init_from_map(self, long_df):
-
-        p_orig = VectorPlotter(
-            data=long_df,
-            variables=dict(x="x", y="y", style="a")
-        )
-        markers = ["s", "p", "h"]
-        p = StyleMapping.map(p_orig, markers=markers)
-        assert p is p_orig
-        assert isinstance(p._style_map, StyleMapping)
-        assert p._style_map(p._style_map.levels, "marker") == markers
 
     def test_plotter_default_init(self, long_df):
 
@@ -501,7 +468,7 @@ class TestStyleMapping:
             data=long_df,
             variables=dict(x="x", y="y"),
         )
-        assert isinstance(p._style_map, StyleMapping)
+        assert not hasattr(p, "_map_style")
 
         p = VectorPlotter(
             data=long_df,
@@ -509,16 +476,15 @@ class TestStyleMapping:
         )
         assert isinstance(p._style_map, StyleMapping)
 
-    def test_plotter_reinit(self, long_df):
+    def test_plotter_customization(self, long_df):
 
-        p_orig = VectorPlotter(
+        p = VectorPlotter(
             data=long_df,
             variables=dict(x="x", y="y", style="a"),
         )
         markers = ["s", "p", "h"]
         style_order = ["b", "a", "c"]
-        p = p_orig.map_style(markers=markers, order=style_order)
-        assert p is p_orig
+        p.map_style(markers=markers, order=style_order)
         assert p._style_map.levels == style_order
         assert p._style_map(style_order, "marker") == markers
 
@@ -757,7 +723,7 @@ class TestVectorPlotter:
         p = VectorPlotter()
         p.assign_variables(data=long_df, variables={"x": name})
         assert_array_equal(p.plot_data["x"], long_df[name])
-        assert p.variables["x"] == name
+        assert p.variables["x"] == str(name)
 
     def test_long_hierarchical_index(self, rng):
 
@@ -771,7 +737,7 @@ class TestVectorPlotter:
         p = VectorPlotter()
         p.assign_variables(data=df, variables={var: name})
         assert_array_equal(p.plot_data[var], df[name])
-        assert p.variables[var] == name
+        assert p.variables[var] == str(name)
 
     def test_long_scalar_and_data(self, long_df):
 
@@ -788,7 +754,7 @@ class TestVectorPlotter:
 
     def test_long_unknown_error(self, long_df):
 
-        err = "Could not interpret value `what` for parameter `hue`"
+        err = "Could not interpret value `what` for `hue`"
         with pytest.raises(ValueError, match=err):
             VectorPlotter(data=long_df, variables={"x": "x", "hue": "what"})
 
@@ -823,6 +789,7 @@ class TestVectorPlotter:
                 data=long_df,
                 variables={"x": "x", "y": "y", semantic: var},
             )
+            getattr(p, f"map_{semantic}")()
             out = p.iter_data(semantics)
             assert len(list(out)) == n_subsets
 
@@ -833,6 +800,8 @@ class TestVectorPlotter:
             data=long_df,
             variables=dict(x="x", y="y", hue=var, style=var),
         )
+        p.map_hue()
+        p.map_style()
         out = p.iter_data(semantics)
         assert len(list(out)) == n_subsets
 
@@ -851,6 +820,8 @@ class TestVectorPlotter:
             data=long_df,
             variables=dict(x="x", y="y", hue=var1, style=var2),
         )
+        p.map_hue()
+        p.map_style()
         out = p.iter_data(["hue"])
         assert len(list(out)) == n_subsets
 
@@ -860,6 +831,8 @@ class TestVectorPlotter:
             data=long_df,
             variables=dict(x="x", y="y", hue=var1, style=var2),
         )
+        p.map_hue()
+        p.map_style()
         out = p.iter_data(semantics)
         assert len(list(out)) == n_subsets
 
@@ -867,6 +840,9 @@ class TestVectorPlotter:
             data=long_df,
             variables=dict(x="x", y="y", hue=var1, size=var2, style=var1),
         )
+        p.map_hue()
+        p.map_size()
+        p.map_style()
         out = p.iter_data(semantics)
         assert len(list(out)) == n_subsets
 
@@ -880,6 +856,9 @@ class TestVectorPlotter:
             data=long_df,
             variables=dict(x="x", y="y", hue=var1, size=var2, style=var3),
         )
+        p.map_hue()
+        p.map_size()
+        p.map_style()
         out = p.iter_data(semantics)
         assert len(list(out)) == n_subsets
 
@@ -991,6 +970,7 @@ class TestVectorPlotter:
             data=null_df,
             variables=dict(x="x", y="y", hue="a")
         )
+        p.map_hue()
         for _, sub_df in p.iter_data("hue"):
             assert not sub_df.isna().any().any()
 
@@ -1096,48 +1076,54 @@ class TestVectorPlotter:
         p._attach(ax, log_scale=True)
         assert ax.xaxis.get_scale() == "log"
         assert ax.yaxis.get_scale() == "linear"
-        assert p._log_scaled("x")
-        assert not p._log_scaled("y")
 
         _, ax = plt.subplots()
         p = VectorPlotter(data=long_df, variables={"x": "x"})
         p._attach(ax, log_scale=2)
         assert ax.xaxis.get_scale() == "log"
         assert ax.yaxis.get_scale() == "linear"
-        assert p._log_scaled("x")
-        assert not p._log_scaled("y")
 
         _, ax = plt.subplots()
         p = VectorPlotter(data=long_df, variables={"y": "y"})
         p._attach(ax, log_scale=True)
         assert ax.xaxis.get_scale() == "linear"
         assert ax.yaxis.get_scale() == "log"
-        assert not p._log_scaled("x")
-        assert p._log_scaled("y")
 
         _, ax = plt.subplots()
         p = VectorPlotter(data=long_df, variables={"x": "x", "y": "y"})
         p._attach(ax, log_scale=True)
         assert ax.xaxis.get_scale() == "log"
         assert ax.yaxis.get_scale() == "log"
-        assert p._log_scaled("x")
-        assert p._log_scaled("y")
 
         _, ax = plt.subplots()
         p = VectorPlotter(data=long_df, variables={"x": "x", "y": "y"})
         p._attach(ax, log_scale=(True, False))
         assert ax.xaxis.get_scale() == "log"
         assert ax.yaxis.get_scale() == "linear"
-        assert p._log_scaled("x")
-        assert not p._log_scaled("y")
 
         _, ax = plt.subplots()
         p = VectorPlotter(data=long_df, variables={"x": "x", "y": "y"})
         p._attach(ax, log_scale=(False, 2))
         assert ax.xaxis.get_scale() == "linear"
         assert ax.yaxis.get_scale() == "log"
-        assert not p._log_scaled("x")
-        assert p._log_scaled("y")
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables={"x": "a", "y": "y"})
+        p._attach(ax, log_scale=True)
+        assert ax.xaxis.get_scale() == "linear"
+        assert ax.yaxis.get_scale() == "log"
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables={"x": "x", "y": "t"})
+        p._attach(ax, log_scale=True)
+        assert ax.xaxis.get_scale() == "log"
+        assert ax.yaxis.get_scale() == "linear"
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables={"x": "a", "y": "b"})
+        p._attach(ax, log_scale=True)
+        assert ax.xaxis.get_scale() == "linear"
+        assert ax.yaxis.get_scale() == "linear"
 
     def test_attach_converters(self, long_df):
 
@@ -1160,6 +1146,61 @@ class TestVectorPlotter:
         p._attach(g)
         assert p.ax is None
         assert p.facets == g
+
+    def test_scale_transform_identity(self, long_df):
+
+        _, ax = plt.subplots()
+        p = VectorPlotter(data=long_df, variables={"x": "x"})
+        p._attach(ax)
+        fwd, inv = p._get_scale_transforms("x")
+
+        x = np.arange(1, 10)
+        assert_array_equal(fwd(x), x)
+        assert_array_equal(inv(x), x)
+
+    def test_scale_transform_identity_facets(self, long_df):
+
+        g = FacetGrid(long_df, col="a")
+        p = VectorPlotter(data=long_df, variables={"x": "x", "col": "a"})
+        p._attach(g)
+
+        fwd, inv = p._get_scale_transforms("x")
+        x = np.arange(1, 10)
+        assert_array_equal(fwd(x), x)
+        assert_array_equal(inv(x), x)
+
+    def test_scale_transform_log(self, long_df):
+
+        _, ax = plt.subplots()
+        ax.set_xscale("log")
+        p = VectorPlotter(data=long_df, variables={"x": "x"})
+        p._attach(ax)
+
+        fwd, inv = p._get_scale_transforms("x")
+        x = np.arange(1, 4)
+        assert_array_almost_equal(fwd(x), np.log10(x))
+        assert_array_almost_equal(inv(x), 10 ** x)
+
+    def test_scale_transform_facets(self, long_df):
+
+        g = FacetGrid(long_df, col="a")
+        p = VectorPlotter(data=long_df, variables={"x": "x", "col": "a"})
+        p._attach(g)
+
+        fwd, inv = p._get_scale_transforms("x")
+        x = np.arange(4)
+        assert_array_equal(inv(fwd(x)), x)
+
+    def test_scale_transform_mixed_facets(self, long_df):
+
+        g = FacetGrid(long_df, col="a", sharex=False)
+        g.axes.flat[0].set_xscale("log")
+        p = VectorPlotter(data=long_df, variables={"x": "x", "col": "a"})
+        p._attach(g)
+
+        err = "Cannot determine transform with mixed scales on faceted axes"
+        with pytest.raises(RuntimeError, match=err):
+            p._get_scale_transforms("x")
 
     def test_attach_shared_axes(self, long_df):
 

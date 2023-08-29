@@ -159,6 +159,8 @@ def null_df(rng, long_df):
 
     df = long_df.copy()
     for col in df:
+        if pd.api.types.is_integer_dtype(df[col]):
+            df[col] = df[col].astype(float)
         idx = rng.permutation(df.index)[:10]
         df.loc[idx, col] = np.nan
     return df
@@ -178,3 +180,19 @@ def object_df(rng, long_df):
 def null_series(flat_series):
 
     return pd.Series(index=flat_series.index, dtype='float64')
+
+
+class MockInterchangeableDataFrame:
+    # Mock object that is not a pandas.DataFrame but that can
+    # be converted to one via the DataFrame exchange protocol
+    def __init__(self, data):
+        self._data = data
+
+    def __dataframe__(self, *args, **kwargs):
+        return self._data.__dataframe__(*args, **kwargs)
+
+
+@pytest.fixture
+def mock_long_df(long_df):
+
+    return MockInterchangeableDataFrame(long_df)

@@ -20,6 +20,7 @@ import matplotlib as mpl
 from matplotlib.axes import Axes
 from matplotlib.artist import Artist
 from matplotlib.figure import Figure
+import numpy as np
 from PIL import Image
 
 from seaborn._marks.base import Mark
@@ -345,9 +346,10 @@ class Plot:
             err = "Plot() accepts no more than 3 positional arguments (data, x, y)."
             raise TypeError(err)
 
-        # TODO need some clearer way to differentiate data / vector here
-        # (There might be an abstract DataFrame class to use here?)
-        if isinstance(args[0], (abc.Mapping, pd.DataFrame)):
+        if (
+            isinstance(args[0], (abc.Mapping, pd.DataFrame))
+            or hasattr(args[0], "__dataframe__")
+        ):
             if data is not None:
                 raise TypeError("`data` given by both name and position.")
             data, args = args[0], args[1:]
@@ -1587,21 +1589,24 @@ class Plotter:
 
                 axes_df = self._filter_subplot_data(df, view)
 
-                with pd.option_context("mode.use_inf_as_na", True):
-                    if keep_na:
-                        # The simpler thing to do would be x.dropna().reindex(x.index).
-                        # But that doesn't work with the way that the subset iteration
-                        # is written below, which assumes data for grouping vars.
-                        # Matplotlib (usually?) masks nan data, so this should "work".
-                        # Downstream code can also drop these rows, at some speed cost.
-                        present = axes_df.notna().all(axis=1)
-                        nulled = {}
-                        for axis in "xy":
-                            if axis in axes_df:
-                                nulled[axis] = axes_df[axis].where(present)
-                        axes_df = axes_df.assign(**nulled)
-                    else:
-                        axes_df = axes_df.dropna()
+                axes_df_inf_as_nan = axes_df.copy()
+                axes_df_inf_as_nan = axes_df_inf_as_nan.mask(
+                    axes_df_inf_as_nan.isin([np.inf, -np.inf]), np.nan
+                )
+                if keep_na:
+                    # The simpler thing to do would be x.dropna().reindex(x.index).
+                    # But that doesn't work with the way that the subset iteration
+                    # is written below, which assumes data for grouping vars.
+                    # Matplotlib (usually?) masks nan data, so this should "work".
+                    # Downstream code can also drop these rows, at some speed cost.
+                    present = axes_df_inf_as_nan.notna().all(axis=1)
+                    nulled = {}
+                    for axis in "xy":
+                        if axis in axes_df:
+                            nulled[axis] = axes_df[axis].where(present)
+                    axes_df = axes_df_inf_as_nan.assign(**nulled)
+                else:
+                    axes_df = axes_df_inf_as_nan.dropna()
 
                 subplot_keys = {}
                 for dim in ["col", "row"]:
@@ -1613,7 +1618,9 @@ class Plotter:
                         yield subplot_keys, axes_df.copy(), view["ax"]
                     continue
 
-                grouped_df = axes_df.groupby(grouping_vars, sort=False, as_index=False)
+                grouped_df = axes_df.groupby(
+                    grouping_vars, sort=False, as_index=False, observed=False,
+                )
 
                 for key in itertools.product(*grouping_keys):
 

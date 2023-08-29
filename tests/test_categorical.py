@@ -202,6 +202,15 @@ class SharedAxesLevelTests:
         self.func(long_df, x="a", y="y", hue="a", legend=True)
         assert ax.get_legend() is not None
 
+    @pytest.mark.parametrize("orient", ["x", "y"])
+    def test_log_scale(self, long_df, orient):
+
+        depvar = {"x": "y", "y": "x"}[orient]
+        variables = {orient: "a", depvar: "z"}
+        ax = self.func(long_df, **variables, log_scale=True)
+        assert getattr(ax, f"get_{orient}scale")() == "linear"
+        assert getattr(ax, f"get_{depvar}scale")() == "log"
+
 
 class SharedScatterTests(SharedAxesLevelTests):
     """Tests functionality common to stripplot and swarmplot."""
@@ -806,13 +815,13 @@ class TestBoxPlot(SharedAxesLevelTests):
         p25, p50, p75 = np.percentile(data, [25, 50, 75])
 
         box = self.get_box_verts(bxp.box)
-        assert box[val_idx].min() == p25
-        assert box[val_idx].max() == p75
+        assert box[val_idx].min() == approx(p25, 1e-3)
+        assert box[val_idx].max() == approx(p75, 1e-3)
         assert box[pos_idx].min() == approx(pos - width / 2)
         assert box[pos_idx].max() == approx(pos + width / 2)
 
         med = bxp.median.get_xydata().T
-        assert tuple(med[val_idx]) == (p50, p50)
+        assert np.allclose(med[val_idx], (p50, p50), rtol=1e-3)
         assert np.allclose(med[pos_idx], (pos - width / 2, pos + width / 2))
 
     def check_whiskers(self, bxp, data, orient, pos, capsize=0.4, whis=1.5):
@@ -831,13 +840,13 @@ class TestBoxPlot(SharedAxesLevelTests):
         adj_lo = data[data >= (p25 - iqr * whis)].min()
         adj_hi = data[data <= (p75 + iqr * whis)].max()
 
-        assert whis_lo[val_idx].max() == p25
+        assert whis_lo[val_idx].max() == approx(p25, 1e-3)
         assert whis_lo[val_idx].min() == approx(adj_lo)
         assert np.allclose(whis_lo[pos_idx], (pos, pos))
         assert np.allclose(caps_lo[val_idx], (adj_lo, adj_lo))
         assert np.allclose(caps_lo[pos_idx], (pos - capsize / 2, pos + capsize / 2))
 
-        assert whis_hi[val_idx].min() == p75
+        assert whis_hi[val_idx].min() == approx(p75, 1e-3)
         assert whis_hi[val_idx].max() == approx(adj_hi)
         assert np.allclose(whis_hi[pos_idx], (pos, pos))
         assert np.allclose(caps_hi[val_idx], (adj_hi, adj_hi))
@@ -943,6 +952,18 @@ class TestBoxPlot(SharedAxesLevelTests):
                 coords = np.log10(box.get_path().vertices.T[0])
                 widths.append(np.ptp(coords))
         assert np.std(widths) == approx(0)
+
+    @pytest.mark.parametrize("orient", ["x", "y"])
+    def test_log_data_scale(self, long_df, orient):
+
+        var = {"x": "y", "y": "x"}[orient]
+        s = long_df["z"]
+        ax = mpl.figure.Figure().subplots()
+        getattr(ax, f"set_{var}scale")("log")
+        boxplot(**{var: s}, whis=np.inf, ax=ax)
+        bxp = ax.containers[0][0]
+        self.check_box(bxp, s, orient, 0)
+        self.check_whiskers(bxp, s, orient, 0, whis=np.inf)
 
     def test_color(self, long_df):
 
@@ -1736,7 +1757,6 @@ class TestViolinPlot(SharedAxesLevelTests):
             dict(data="long", x="a", y="y", inner="points"),
             dict(data="long", x="a", y="y", hue="b", inner="quartiles", split=True),
             dict(data="long", x="a", y="y", density_norm="count", common_norm=True),
-            dict(data="long", x="a", y="y", bw=2),
             dict(data="long", x="a", y="y", bw_adjust=2),
         ]
     )
@@ -2370,7 +2390,8 @@ class TestPointPlot(SharedAggTests):
         assert_array_equal(line.get_xdata(), x)
         assert_array_equal(line.get_ydata(), y)
 
-    @pytest.mark.parametrize("estimator", ["mean", np.mean])
+    # Use lambda around np.mean to avoid uninformative pandas deprecation warning
+    @pytest.mark.parametrize("estimator", ["mean", lambda x: np.mean(x)])
     def test_estimate(self, long_df, estimator):
 
         agg_var, val_var = "a", "y"
@@ -3062,12 +3083,13 @@ class TestBeeswarm:
         p = Beeswarm(width=1)
 
         points = np.zeros(10)
-        assert_array_equal(points, p.add_gutters(points, 0))
+        t_fwd = t_inv = lambda x: x
+        assert_array_equal(points, p.add_gutters(points, 0, t_fwd, t_inv))
 
         points = np.array([0, -1, .4, .8])
         msg = r"50.0% of the points cannot be placed.+$"
         with pytest.warns(UserWarning, match=msg):
-            new_points = p.add_gutters(points, 0)
+            new_points = p.add_gutters(points, 0, t_fwd, t_inv)
         assert_array_equal(new_points, np.array([0, -.5, .4, .5]))
 
 

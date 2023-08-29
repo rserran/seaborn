@@ -22,6 +22,7 @@ from seaborn.utils import (
     _check_argument,
     _draw_figure,
     _default_color,
+    _get_transform_functions,
     _normalize_kwargs,
     _version_predates,
 )
@@ -41,8 +42,6 @@ __all__ = [
 # Subclassing _RelationalPlotter for the legend machinery,
 # but probably should move that more centrally
 class _CategoricalPlotter(_RelationalPlotter):
-
-    semantics = "x", "y", "hue", "units"
 
     wide_structure = {"x": "@columns", "y": "@values"}
     flat_structure = {"y": "@values"}
@@ -371,7 +370,7 @@ class _CategoricalPlotter(_RelationalPlotter):
     def _invert_scale(self, ax, data, vars=("x", "y")):
         """Undo scaling after computation so data are plotted correctly."""
         for var in vars:
-            _, inv = utils._get_transform_functions(ax, var[0])
+            _, inv = _get_transform_functions(ax, var[0])
             if var == self.orient and "width" in data:
                 hw = data["width"] / 2
                 data["edge"] = inv(data[var] - hw)
@@ -528,9 +527,7 @@ class _CategoricalPlotter(_RelationalPlotter):
             if not sub_data.empty:
                 point_collections[(ax, sub_data[self.orient].iloc[0])] = points
 
-        beeswarm = Beeswarm(
-            width=width, orient=self.orient, warn_thresh=warn_thresh,
-        )
+        beeswarm = Beeswarm(width=width, orient=self.orient, warn_thresh=warn_thresh)
         for (ax, center), points in point_collections.items():
             if points.get_offsets().shape[0] > 1:
 
@@ -627,6 +624,12 @@ class _CategoricalPlotter(_RelationalPlotter):
             capwidth = plot_kws.get("capwidths", 0.5 * data["width"])
 
             self._invert_scale(ax, data)
+            _, inv = _get_transform_functions(ax, value_var)
+            for stat in ["mean", "med", "q1", "q3", "cilo", "cihi", "whislo", "whishi"]:
+                stats[stat] = inv(stats[stat])
+            stats["fliers"] = stats["fliers"].map(inv)
+
+            linear_orient_scale = getattr(ax, f"get_{self.orient}scale")() == "linear"
 
             maincolor = self._hue_map(sub_vars["hue"]) if "hue" in sub_vars else color
             if fill:
@@ -651,8 +654,8 @@ class _CategoricalPlotter(_RelationalPlotter):
             default_kws = dict(
                 bxpstats=stats.to_dict("records"),
                 positions=data[self.orient],
-                # Set width to 0 with log scaled orient axis to avoid going < 0
-                widths=0 if self._log_scaled(self.orient) else data["width"],
+                # Set width to 0 to avoid going out of domain
+                widths=data["width"] if linear_orient_scale else 0,
                 patch_artist=fill,
                 vert=self.orient == "x",
                 manage_ticks=False,
@@ -673,7 +676,8 @@ class _CategoricalPlotter(_RelationalPlotter):
 
             # Reset artist widths after adding so everything stays positive
             ori_idx = ["x", "y"].index(self.orient)
-            if self._log_scaled(self.orient):
+
+            if not linear_orient_scale:
                 for i, box in enumerate(data.to_dict("records")):
                     p0 = box["edge"]
                     p1 = box["edge"] + box["width"]
@@ -702,9 +706,10 @@ class _CategoricalPlotter(_RelationalPlotter):
                         artists["medians"][i].set_data(verts)
 
                     if artists["caps"]:
+                        f_fwd, f_inv = _get_transform_functions(ax, self.orient)
                         for line in artists["caps"][2 * i:2 * i + 2]:
-                            p0 = 10 ** (np.log10(box[self.orient]) - capwidth[i] / 2)
-                            p1 = 10 ** (np.log10(box[self.orient]) + capwidth[i] / 2)
+                            p0 = f_inv(f_fwd(box[self.orient]) - capwidth[i] / 2)
+                            p1 = f_inv(f_fwd(box[self.orient]) + capwidth[i] / 2)
                             verts = line.get_xydata().T
                             verts[ori_idx][:] = p0, p1
                             line.set_data(verts)
@@ -769,8 +774,8 @@ class _CategoricalPlotter(_RelationalPlotter):
                                                  allow_empty=False):
 
             ax = self._get_axes(sub_vars)
-            _, inv_ori = utils._get_transform_functions(ax, self.orient)
-            _, inv_val = utils._get_transform_functions(ax, value_var)
+            _, inv_ori = _get_transform_functions(ax, self.orient)
+            _, inv_val = _get_transform_functions(ax, value_var)
 
             # Statistics
             lv_data = estimator(sub_data[value_var])
@@ -953,12 +958,15 @@ class _CategoricalPlotter(_RelationalPlotter):
             max_density = {key: common_max_density for key in norm_keys}
             max_count = {key: common_max_count for key in norm_keys}
         else:
-            max_density = {
-                key: np.nanmax([
-                    v["density"].max() for v in violin_data
-                    if vars_to_key(v["sub_vars"]) == key
-                ]) for key in norm_keys
-            }
+            with warnings.catch_warnings():
+                # Ignore warning when all violins are singular; it's not important
+                warnings.filterwarnings('ignore', "All-NaN (slice|axis) encountered")
+                max_density = {
+                    key: np.nanmax([
+                        v["density"].max() for v in violin_data
+                        if vars_to_key(v["sub_vars"]) == key
+                    ]) for key in norm_keys
+                }
             max_count = {
                 key: np.nanmax([
                     len(v["observations"]) for v in violin_data
@@ -1010,8 +1018,8 @@ class _CategoricalPlotter(_RelationalPlotter):
                 offsets = span, span
 
             ax = violin["ax"]
-            _, invx = utils._get_transform_functions(ax, "x")
-            _, invy = utils._get_transform_functions(ax, "y")
+            _, invx = _get_transform_functions(ax, "x")
+            _, invy = _get_transform_functions(ax, "y")
             inv_pos = {"x": invx, "y": invy}[self.orient]
             inv_val = {"x": invx, "y": invy}[value_var]
 
@@ -1168,17 +1176,11 @@ class _CategoricalPlotter(_RelationalPlotter):
         markers = self._map_prop_with_hue("marker", markers, "o", plot_kws)
         linestyles = self._map_prop_with_hue("linestyle", linestyles, "-", plot_kws)
 
-        positions = self.var_levels[self.orient]
+        base_positions = self.var_levels[self.orient]
         if self.var_types[self.orient] == "categorical":
             min_cat_val = int(self.comp_data[self.orient].min())
             max_cat_val = int(self.comp_data[self.orient].max())
-            positions = [i for i in range(min_cat_val, max_cat_val + 1)]
-        else:
-            if self._log_scaled(self.orient):
-                positions = np.log10(positions)
-            if self.var_types[self.orient] == "datetime":
-                positions = mpl.dates.date2num(positions)
-        positions = pd.Index(positions, name=self.orient)
+            base_positions = [i for i in range(min_cat_val, max_cat_val + 1)]
 
         n_hue_levels = 0 if self._hue_map.levels is None else len(self._hue_map.levels)
         if dodge is True:
@@ -1192,11 +1194,14 @@ class _CategoricalPlotter(_RelationalPlotter):
 
             ax = self._get_axes(sub_vars)
 
+            ori_axis = getattr(ax, f"{self.orient}axis")
+            transform, _ = _get_transform_functions(ax, self.orient)
+            positions = transform(ori_axis.convert_units(base_positions))
             agg_data = sub_data if sub_data.empty else (
                 sub_data
                 .groupby(self.orient)
                 .apply(aggregator, agg_var)
-                .reindex(positions)
+                .reindex(pd.Index(positions, name=self.orient))
                 .reset_index()
             )
 
@@ -1316,14 +1321,12 @@ class _CategoricalPlotter(_RelationalPlotter):
             pos = np.array([row[self.orient], row[self.orient]])
             val = np.array([row[f"{var}min"], row[f"{var}max"]])
 
-            cw = capsize * self._native_width / 2
-            if self._log_scaled(self.orient):
-                log_pos = np.log10(pos)
-                cap = 10 ** (log_pos[0] - cw), 10 ** (log_pos[1] + cw)
-            else:
-                cap = pos[0] - cw, pos[1] + cw
-
             if capsize:
+
+                cw = capsize * self._native_width / 2
+                scl, inv = _get_transform_functions(ax, self.orient)
+                cap = inv(scl(pos[0]) - cw), inv(scl(pos[1]) + cw)
+
                 pos = np.concatenate([
                     [*cap, np.nan], pos, [np.nan, *cap]
                 ])
@@ -1341,15 +1344,6 @@ class _CategoricalPlotter(_RelationalPlotter):
 class _CategoricalAggPlotter(_CategoricalPlotter):
 
     flat_structure = {"x": "@index", "y": "@values"}
-
-
-class _CategoricalFacetPlotter(_CategoricalPlotter):
-    semantics = _CategoricalPlotter.semantics + ("col", "row")
-
-
-class _CategoricalAggFacetPlotter(_CategoricalAggPlotter, _CategoricalFacetPlotter):
-    # Ugh, this is messy
-    pass
 
 
 _categorical_docs = dict(
@@ -1491,6 +1485,15 @@ _categorical_docs = dict(
 
         .. versionadded:: v0.13.0\
     """),
+    log_scale=dedent("""\
+    log_scale : bool or number, or pair of bools or numbers
+        Set axis scale(s) to log. A single value sets the data axis for any numeric
+        axes in the plot. A pair of values sets each axis independently.
+        Numeric values are interpreted as the desired base (default 10).
+        When `None` or `False`, seaborn defers to the existing Axes scale.
+
+        .. versionadded:: v0.13.0\
+    """),
     native_scale=dedent("""\
     native_scale : bool
         When True, numeric or datetime values on the categorical axis will maintain
@@ -1570,13 +1573,13 @@ def boxplot(
     data=None, *, x=None, y=None, hue=None, order=None, hue_order=None,
     orient=None, color=None, palette=None, saturation=.75, fill=True,
     dodge="auto", width=.8, gap=0, whis=1.5, linecolor=None, linewidth=None,
-    fliersize=None, hue_norm=None, native_scale=False, formatter=None,
+    fliersize=None, hue_norm=None, native_scale=False, log_scale=None, formatter=None,
     legend="auto", ax=None, **kwargs
 ):
 
     p = _CategoricalPlotter(
         data=data,
-        variables=_CategoricalPlotter.get_semantics(locals()),
+        variables=dict(x=x, y=y, hue=hue),
         order=order,
         orient=orient,
         require_numeric=False,
@@ -1596,7 +1599,7 @@ def boxplot(
     if p.var_types.get(p.orient) == "categorical" or not native_scale:
         p.scale_categorical(p.orient, order=order, formatter=formatter)
 
-    p._attach(ax)
+    p._attach(ax, log_scale=log_scale)
 
     # Deprecations to remove in v0.14.0.
     hue_order = p._palette_without_hue_backcompat(palette, hue_order)
@@ -1663,6 +1666,7 @@ boxplot.__doc__ = dedent("""\
     fliersize : float
         Size of the markers used to indicate outlier observations.
     {hue_norm}
+    {log_scale}
     {native_scale}
     {formatter}
     {legend}
@@ -1695,14 +1699,14 @@ def violinplot(
     inner="box", split=False, width=.8, dodge="auto", gap=0,
     linewidth=None, linecolor=None, cut=2, gridsize=100,
     bw_method="scott", bw_adjust=1, density_norm="area", common_norm=False,
-    hue_norm=None, formatter=None, native_scale=False, legend="auto",
-    scale=deprecated, scale_hue=deprecated, bw=deprecated,
+    hue_norm=None, formatter=None, log_scale=None, native_scale=False,
+    legend="auto", scale=deprecated, scale_hue=deprecated, bw=deprecated,
     inner_kws=None, ax=None, **kwargs,
 ):
 
     p = _CategoricalPlotter(
         data=data,
-        variables=_CategoricalPlotter.get_semantics(locals()),
+        variables=dict(x=x, y=y, hue=hue),
         order=order,
         orient=orient,
         require_numeric=False,
@@ -1722,7 +1726,7 @@ def violinplot(
     if p.var_types.get(p.orient) == "categorical" or not native_scale:
         p.scale_categorical(p.orient, order=order, formatter=formatter)
 
-    p._attach(ax)
+    p._attach(ax, log_scale=log_scale)
 
     # Deprecations to remove in v0.14.0.
     hue_order = p._palette_without_hue_backcompat(palette, hue_order)
@@ -1832,6 +1836,7 @@ violinplot.__doc__ = dedent("""\
         .. versionadded:: v0.13.0
     {hue_norm}
     {formatter}
+    {log_scale}
     {native_scale}
     {legend}
     scale : {{"area", "count", "width"}}
@@ -1882,14 +1887,14 @@ def boxenplot(
     orient=None, color=None, palette=None, saturation=.75, fill=True,
     dodge="auto", width=.8, gap=0, linewidth=None, linecolor=None,
     width_method="exponential", k_depth="tukey", outlier_prop=0.007, trust_alpha=0.05,
-    showfliers=True, hue_norm=None, native_scale=False, formatter=None,
+    showfliers=True, hue_norm=None, log_scale=None, native_scale=False, formatter=None,
     legend="auto", scale=deprecated, box_kws=None, flier_kws=None, line_kws=None,
     ax=None, **kwargs,
 ):
 
     p = _CategoricalPlotter(
         data=data,
-        variables=_CategoricalPlotter.get_semantics(locals()),
+        variables=dict(x=x, y=y, hue=hue),
         order=order,
         orient=orient,
         require_numeric=False,
@@ -1909,7 +1914,7 @@ def boxenplot(
     if p.var_types.get(p.orient) == "categorical" or not native_scale:
         p.scale_categorical(p.orient, order=order, formatter=formatter)
 
-    p._attach(ax)
+    p._attach(ax, log_scale=log_scale)
 
     # Deprecations to remove in v0.14.0.
     hue_order = p._palette_without_hue_backcompat(palette, hue_order)
@@ -1999,6 +2004,7 @@ boxenplot.__doc__ = dedent("""\
     showfliers : bool
         If False, suppress the plotting of outliers.
     {hue_norm}
+    {log_scale}
     {native_scale}
     {formatter}
     {legend}
@@ -2049,13 +2055,13 @@ def stripplot(
     data=None, *, x=None, y=None, hue=None, order=None, hue_order=None,
     jitter=True, dodge=False, orient=None, color=None, palette=None,
     size=5, edgecolor="gray", linewidth=0,
-    hue_norm=None, native_scale=False, formatter=None, legend="auto",
+    hue_norm=None, log_scale=None, native_scale=False, formatter=None, legend="auto",
     ax=None, **kwargs
 ):
 
     p = _CategoricalPlotter(
         data=data,
-        variables=_CategoricalPlotter.get_semantics(locals()),
+        variables=dict(x=x, y=y, hue=hue),
         order=order,
         orient=orient,
         require_numeric=False,
@@ -2071,7 +2077,7 @@ def stripplot(
     if p.var_types.get(p.orient) == "categorical" or not native_scale:
         p.scale_categorical(p.orient, order=order, formatter=formatter)
 
-    p._attach(ax)
+    p._attach(ax, log_scale=log_scale)
 
     # Deprecations to remove in v0.14.0.
     hue_order = p._palette_without_hue_backcompat(palette, hue_order)
@@ -2145,6 +2151,7 @@ stripplot.__doc__ = dedent("""\
         so edge colors are only visible with nonzero line width.
     {linewidth}
     {hue_norm}
+    {log_scale}
     {native_scale}
     {formatter}
     {legend}
@@ -2174,14 +2181,14 @@ stripplot.__doc__ = dedent("""\
 def swarmplot(
     data=None, *, x=None, y=None, hue=None, order=None, hue_order=None,
     dodge=False, orient=None, color=None, palette=None,
-    size=5, edgecolor="gray", linewidth=0, hue_norm=None,
+    size=5, edgecolor="gray", linewidth=0, hue_norm=None, log_scale=None,
     native_scale=False, formatter=None, legend="auto", warn_thresh=.05,
     ax=None, **kwargs
 ):
 
     p = _CategoricalPlotter(
         data=data,
-        variables=_CategoricalPlotter.get_semantics(locals()),
+        variables=dict(x=x, y=y, hue=hue),
         order=order,
         orient=orient,
         require_numeric=False,
@@ -2197,7 +2204,7 @@ def swarmplot(
     if p.var_types.get(p.orient) == "categorical" or not native_scale:
         p.scale_categorical(p.orient, order=order, formatter=formatter)
 
-    p._attach(ax)
+    p._attach(ax, log_scale=log_scale)
 
     if not p.has_xy_data:
         return ax
@@ -2271,6 +2278,7 @@ swarmplot.__doc__ = dedent("""\
         brightness is determined by the color palette used for the body
         of the points.
     {linewidth}
+    {log_scale}
     {native_scale}
     {formatter}
     {legend}
@@ -2301,9 +2309,9 @@ def barplot(
     data=None, *, x=None, y=None, hue=None, order=None, hue_order=None,
     estimator="mean", errorbar=("ci", 95), n_boot=1000, units=None, seed=None,
     orient=None, color=None, palette=None, saturation=.75, fill=True, hue_norm=None,
-    width=.8, dodge="auto", gap=0, native_scale=False, formatter=None, legend="auto",
-    capsize=0, err_kws=None, ci=deprecated, errcolor=deprecated, errwidth=deprecated,
-    ax=None, **kwargs,
+    width=.8, dodge="auto", gap=0, log_scale=None, native_scale=False, formatter=None,
+    legend="auto", capsize=0, err_kws=None,
+    ci=deprecated, errcolor=deprecated, errwidth=deprecated, ax=None, **kwargs,
 ):
 
     errorbar = utils._deprecate_ci(errorbar, ci)
@@ -2315,7 +2323,7 @@ def barplot(
 
     p = _CategoricalAggPlotter(
         data=data,
-        variables=_CategoricalAggPlotter.get_semantics(locals()),
+        variables=dict(x=x, y=y, hue=hue, units=units),
         order=order,
         orient=orient,
         require_numeric=False,
@@ -2335,7 +2343,7 @@ def barplot(
     if p.var_types.get(p.orient) == "categorical" or not native_scale:
         p.scale_categorical(p.orient, order=order, formatter=formatter)
 
-    p._attach(ax)
+    p._attach(ax, log_scale=log_scale)
 
     # Deprecations to remove in v0.14.0.
     hue_order = p._palette_without_hue_backcompat(palette, hue_order)
@@ -2395,6 +2403,7 @@ barplot.__doc__ = dedent("""\
     {width}
     {dodge}
     {gap}
+    {log_scale}
     {native_scale}
     {formatter}
     {legend}
@@ -2441,7 +2450,7 @@ def pointplot(
     data=None, *, x=None, y=None, hue=None, order=None, hue_order=None,
     estimator="mean", errorbar=("ci", 95), n_boot=1000, units=None, seed=None,
     color=None, palette=None, hue_norm=None, markers=default, linestyles=default,
-    dodge=False, native_scale=False, orient=None, capsize=0,
+    dodge=False, log_scale=None, native_scale=False, orient=None, capsize=0,
     formatter=None, legend="auto", err_kws=None,
     ci=deprecated, errwidth=deprecated, join=deprecated, scale=deprecated,
     ax=None,
@@ -2452,7 +2461,7 @@ def pointplot(
 
     p = _CategoricalAggPlotter(
         data=data,
-        variables=_CategoricalAggPlotter.get_semantics(locals()),
+        variables=dict(x=x, y=y, hue=hue, units=units),
         order=order,
         orient=orient,
         require_numeric=False,
@@ -2468,7 +2477,7 @@ def pointplot(
     if p.var_types.get(p.orient) == "categorical" or not native_scale:
         p.scale_categorical(p.orient, order=order, formatter=formatter)
 
-    p._attach(ax)
+    p._attach(ax, log_scale=log_scale)
 
     # Deprecations to remove in v0.14.0.
     hue_order = p._palette_without_hue_backcompat(palette, hue_order)
@@ -2534,6 +2543,7 @@ pointplot.__doc__ = dedent("""\
     dodge : bool or float
         Amount to separate the points for each level of the `hue` variable along
         the categorical axis. Setting to `True` will apply a small default.
+    {log_scale}
     {native_scale}
     {orient}
     {capsize}
@@ -2585,22 +2595,22 @@ pointplot.__doc__ = dedent("""\
 def countplot(
     data=None, *, x=None, y=None, hue=None, order=None, hue_order=None,
     orient=None, color=None, palette=None, saturation=.75, fill=True, hue_norm=None,
-    stat="count", width=.8, dodge="auto", gap=0, native_scale=False, formatter=None,
-    legend="auto", ax=None, **kwargs
+    stat="count", width=.8, dodge="auto", gap=0, log_scale=None, native_scale=False,
+    formatter=None, legend="auto", ax=None, **kwargs
 ):
 
     if x is None and y is not None:
         orient = "y"
-        x = 1
+        x = 1 if list(y) else None
     elif x is not None and y is None:
         orient = "x"
-        y = 1
+        y = 1 if list(x) else None
     elif x is not None and y is not None:
         raise TypeError("Cannot pass values for both `x` and `y`.")
 
     p = _CategoricalAggPlotter(
         data=data,
-        variables=_CategoricalAggPlotter.get_semantics(locals()),
+        variables=dict(x=x, y=y, hue=hue),
         order=order,
         orient=orient,
         require_numeric=False,
@@ -2620,7 +2630,7 @@ def countplot(
     if p.var_types.get(p.orient) == "categorical" or not native_scale:
         p.scale_categorical(p.orient, order=order, formatter=formatter)
 
-    p._attach(ax)
+    p._attach(ax, log_scale=log_scale)
 
     # Deprecations to remove in v0.14.0.
     hue_order = p._palette_without_hue_backcompat(palette, hue_order)
@@ -2689,6 +2699,7 @@ countplot.__doc__ = dedent("""\
         .. versionadded:: v0.13.0
     {width}
     {dodge}
+    {log_scale}
     {native_scale}
     {formatter}
     {legend}
@@ -2717,10 +2728,10 @@ def catplot(
     data=None, *, x=None, y=None, hue=None, row=None, col=None, kind="strip",
     estimator="mean", errorbar=("ci", 95), n_boot=1000, units=None, seed=None,
     order=None, hue_order=None, row_order=None, col_order=None, col_wrap=None,
-    height=5, aspect=1, native_scale=False, formatter=None, orient=None,
-    color=None, palette=None, hue_norm=None, legend="auto", legend_out=True,
-    sharex=True, sharey=True, margin_titles=False, facet_kws=None, ci=deprecated,
-    **kwargs
+    height=5, aspect=1, log_scale=None, native_scale=False, formatter=None,
+    orient=None, color=None, palette=None, hue_norm=None, legend="auto",
+    legend_out=True, sharex=True, sharey=True, margin_titles=False, facet_kws=None,
+    ci=deprecated, **kwargs
 ):
 
     # Check for attempt to plot onto specific axes and warn
@@ -2734,9 +2745,9 @@ def catplot(
     undodged_kinds = ["strip", "swarm", "point"]
 
     if kind in ["bar", "point", "count"]:
-        Plotter = _CategoricalAggFacetPlotter
+        Plotter = _CategoricalAggPlotter
     else:
-        Plotter = _CategoricalFacetPlotter
+        Plotter = _CategoricalPlotter
 
     if kind == "count":
         if x is None and y is not None:
@@ -2750,7 +2761,7 @@ def catplot(
 
     p = Plotter(
         data=data,
-        variables=Plotter.get_semantics(locals()),
+        variables=dict(x=x, y=y, hue=hue, row=row, col=col, units=units),
         order=order,
         orient=orient,
         require_numeric=False,
@@ -2790,7 +2801,7 @@ def catplot(
     if not native_scale or p.var_types[p.orient] == "categorical":
         p.scale_categorical(p.orient, order=order, formatter=formatter)
 
-    p._attach(g)
+    p._attach(g, log_scale=log_scale)
 
     if not has_xy_data:
         return g
@@ -3220,13 +3231,12 @@ class Beeswarm:
             new_xy = new_xyr[:, :2]
         new_x_data, new_y_data = ax.transData.inverted().transform(new_xy).T
 
-        log_scale = getattr(ax, f"get_{self.orient}scale")() == "log"
-
         # Add gutters
+        t_fwd, t_inv = _get_transform_functions(ax, self.orient)
         if self.orient == "y":
-            self.add_gutters(new_y_data, center, log_scale=log_scale)
+            self.add_gutters(new_y_data, center, t_fwd, t_inv)
         else:
-            self.add_gutters(new_x_data, center, log_scale=log_scale)
+            self.add_gutters(new_x_data, center, t_fwd, t_inv)
 
         # Reposition the points so they do not overlap
         if self.orient == "y":
@@ -3330,20 +3340,14 @@ class Beeswarm:
             "No non-overlapping candidates found. This should not happen."
         )
 
-    def add_gutters(self, points, center, log_scale=False):
+    def add_gutters(self, points, center, trans_fwd, trans_inv):
         """Stop points from extending beyond their territory."""
         half_width = self.width / 2
-        if log_scale:
-            low_gutter = 10 ** (np.log10(center) - half_width)
-        else:
-            low_gutter = center - half_width
+        low_gutter = trans_inv(trans_fwd(center) - half_width)
         off_low = points < low_gutter
         if off_low.any():
             points[off_low] = low_gutter
-        if log_scale:
-            high_gutter = 10 ** (np.log10(center) + half_width)
-        else:
-            high_gutter = center + half_width
+        high_gutter = trans_inv(trans_fwd(center) + half_width)
         off_high = points > high_gutter
         if off_high.any():
             points[off_high] = high_gutter
