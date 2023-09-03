@@ -397,6 +397,16 @@ class TestScaling:
         xfm_log = ax_log.xaxis.get_transform().transform
         assert_array_equal(xfm_log([1, 10, 100]), [0, 1, 2])
 
+    def test_paired_with_common_fallback(self):
+
+        x0, x1 = [1, 2, 3], [1, 10, 100]
+        p = Plot().pair(x=[x0, x1]).scale(x="pow", x1="log").plot()
+        ax_pow, ax_log = p._figure.axes
+        xfm_pow = ax_pow.xaxis.get_transform().transform
+        assert_array_equal(xfm_pow([1, 2, 3]), [1, 4, 9])
+        xfm_log = ax_log.xaxis.get_transform().transform
+        assert_array_equal(xfm_log([1, 10, 100]), [0, 1, 2])
+
     @pytest.mark.xfail(reason="Custom log scale needs log name for consistency")
     def test_log_scale_name(self):
 
@@ -1734,16 +1744,21 @@ class TestPairInterface:
 
     def test_limits(self, long_df):
 
-        limit = (-2, 24)
-        p = Plot(long_df, y="y").pair(x=["x", "z"]).limit(x1=limit).plot()
-        ax1 = p._figure.axes[1]
-        assert ax1.get_xlim() == limit
+        lims = (-3, 10), (-2, 24)
+        p = Plot(long_df, y="y").pair(x=["x", "z"]).limit(x=lims[0], x1=lims[1]).plot()
+        for ax, lim in zip(p._figure.axes, lims):
+            assert ax.get_xlim() == lim
 
     def test_labels(self, long_df):
 
-        label = "Z"
-        p = Plot(long_df, y="y").pair(x=["x", "z"]).label(x1=label).plot()
-        ax1 = p._figure.axes[1]
+        label = "zed"
+        p = (
+            Plot(long_df, y="y")
+            .pair(x=["x", "z"])
+            .label(x=str.capitalize, x1=label)
+        )
+        ax0, ax1 = p.plot()._figure.axes
+        assert ax0.get_xlabel() == "X"
         assert ax1.get_xlabel() == label
 
 
@@ -2126,6 +2141,30 @@ class TestLegend:
         assert legend.texts
         for text in legend.texts:
             assert float(text.get_text()) > 1e7
+
+    def test_layer_legend(self, xy):
+
+        p = Plot(**xy).add(MockMark(), label="a").add(MockMark(), label="b").plot()
+        legend = p._figure.legends[0]
+        assert legend.texts
+        for text, expected in zip(legend.texts, "ab"):
+            assert text.get_text() == expected
+
+    def test_layer_legend_with_scale_legend(self, xy):
+
+        s = pd.Series(["a", "b", "a", "c"], name="s")
+        p = Plot(**xy, color=s).add(MockMark(), label="x").plot()
+
+        legend = p._figure.legends[0]
+        texts = [t.get_text() for t in legend.findobj(mpl.text.Text)]
+        assert "x" in texts
+        for val in s.unique():
+            assert val in texts
+
+    def test_layer_legend_title(self, xy):
+
+        p = Plot(**xy).add(MockMark(), label="x").label(legend="layer").plot()
+        assert p._figure.legends[0].get_title().get_text() == "layer"
 
 
 class TestDefaultObject:
