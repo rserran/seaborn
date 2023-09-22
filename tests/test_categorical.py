@@ -608,6 +608,14 @@ class SharedScatterTests(SharedAxesLevelTests):
         vals = [float(t.get_text()) for t in ax.legend_.texts]
         assert (vals[1] - vals[0]) == approx(vals[2] - vals[1])
 
+    def test_legend_attributes(self, long_df):
+
+        kws = {"edgecolor": "r", "linewidth": 1}
+        ax = self.func(data=long_df, x="x", y="y", hue="a", **kws)
+        for pt in get_legend_handles(ax.get_legend()):
+            assert same_color(pt.get_markeredgecolor(), kws["edgecolor"])
+            assert pt.get_markeredgewidth() == kws["linewidth"]
+
     def test_legend_disabled(self, long_df):
 
         ax = self.func(data=long_df, x="y", y="a", hue="b", legend=False)
@@ -673,6 +681,7 @@ class SharedScatterTests(SharedAxesLevelTests):
             dict(data="long", x="x", color="C3"),
             dict(data="long", y="y", hue="a", jitter=False),
             dict(data="long", x="a", y="y", hue="z", edgecolor="w", linewidth=.5),
+            dict(data="long", x="a", y="y", hue="z", edgecolor="auto", linewidth=.5),
             dict(data="long", x="a_cat", y="y", hue="z"),
             dict(data="long", x="y", y="s", hue="c", orient="h", dodge=True),
             dict(data="long", x="s", y="y", hue="c", native_scale=True),
@@ -722,6 +731,33 @@ class SharedAggTests(SharedAxesLevelTests):
         labels = [t.get_text() for t in ax.get_xticklabels()]
         for label, level in zip(labels, ind):
             assert label == level
+
+
+class SharedPatchArtistTests:
+
+    @pytest.mark.parametrize("fill", [True, False])
+    def test_legend_fill(self, long_df, fill):
+
+        palette = color_palette()
+        ax = self.func(
+            long_df, x="x", y="y", hue="a",
+            saturation=1, linecolor="k", fill=fill,
+        )
+        for i, patch in enumerate(get_legend_handles(ax.get_legend())):
+            fc = patch.get_facecolor()
+            ec = patch.get_edgecolor()
+            if fill:
+                assert same_color(fc, palette[i])
+                assert same_color(ec, "k")
+            else:
+                assert fc == (0, 0, 0, 0)
+                assert same_color(ec, palette[i])
+
+    def test_legend_attributes(self, long_df):
+
+        ax = self.func(long_df, x="x", y="y", hue="a", linewidth=3)
+        for patch in get_legend_handles(ax.get_legend()):
+            assert patch.get_linewidth() == 3
 
 
 class TestStripPlot(SharedScatterTests):
@@ -786,7 +822,7 @@ class TestSwarmPlot(SharedScatterTests):
     func = staticmethod(partial(swarmplot, warn_thresh=1))
 
 
-class TestBoxPlot(SharedAxesLevelTests):
+class TestBoxPlot(SharedAxesLevelTests, SharedPatchArtistTests):
 
     func = staticmethod(boxplot)
 
@@ -991,6 +1027,11 @@ class TestBoxPlot(SharedAxesLevelTests):
         for flier in bxp.fliers:
             assert same_color(flier.get_markeredgecolor(), color)
 
+    def test_linecolor_gray_warning(self, long_df):
+
+        with pytest.warns(FutureWarning, match="Use \"auto\" to set automatic"):
+            boxplot(long_df, x="y", linecolor="gray")
+
     def test_saturation(self, long_df):
 
         color = "#8912b0"
@@ -1107,7 +1148,7 @@ class TestBoxPlot(SharedAxesLevelTests):
         assert_plots_equal(ax, g.ax)
 
 
-class TestBoxenPlot(SharedAxesLevelTests):
+class TestBoxenPlot(SharedAxesLevelTests, SharedPatchArtistTests):
 
     func = staticmethod(boxenplot)
 
@@ -1404,7 +1445,7 @@ class TestBoxenPlot(SharedAxesLevelTests):
         assert_plots_equal(ax, g.ax)
 
 
-class TestViolinPlot(SharedAxesLevelTests):
+class TestViolinPlot(SharedAxesLevelTests, SharedPatchArtistTests):
 
     func = staticmethod(violinplot)
 
@@ -1681,7 +1722,7 @@ class TestViolinPlot(SharedAxesLevelTests):
 
     def test_common_norm(self, long_df):
 
-        ax = violinplot(long_df, x="a", y="y", hue="c", common_norm=True, legend=False)
+        ax = violinplot(long_df, x="a", y="y", hue="c", common_norm=True)
         widths = []
         for poly in ax.collections:
             widths.append(self.violin_width(poly))
@@ -1885,7 +1926,7 @@ class TestBarPlot(SharedAggTests):
         x, y = ["a", "b", "c"], [1, 2, 3]
         hue = ["x", "x", "y"]
 
-        ax = barplot(x=x, y=y, hue=hue, saturation=1)
+        ax = barplot(x=x, y=y, hue=hue, saturation=1, legend=False)
         for i, bar in enumerate(ax.patches):
             assert bar.get_x() + bar.get_width() / 2 == approx(i)
             assert bar.get_y() == 0
@@ -1910,7 +1951,7 @@ class TestBarPlot(SharedAggTests):
         y = [1, 2, 3, 4]
         hue = ["x", "x", "y", "y"]
 
-        ax = barplot(x=x, y=y, hue=hue, saturation=1)
+        ax = barplot(x=x, y=y, hue=hue, saturation=1, legend=False)
         for i, bar in enumerate(ax.patches):
             sign = 1 if i // 2 else -1
             assert (
@@ -1928,7 +1969,7 @@ class TestBarPlot(SharedAggTests):
         y = [1, 2, 3, 4]
         hue = ["x", "x", "y", "y"]
 
-        ax = barplot(x=x, y=y, hue=hue, gap=.25)
+        ax = barplot(x=x, y=y, hue=hue, gap=.25, legend=False)
         for i, bar in enumerate(ax.patches):
             assert bar.get_width() == approx(0.8 / 2 * .75)
 
@@ -1938,7 +1979,7 @@ class TestBarPlot(SharedAggTests):
         y = [1, 2, 3, 4]
         hue = ["x", "x", "y", "y"]
 
-        ax = barplot(x=x, y=y, hue=hue, saturation=1, dodge=False)
+        ax = barplot(x=x, y=y, hue=hue, saturation=1, dodge=False, legend=False)
         for i, bar in enumerate(ax.patches):
             assert bar.get_x() + bar.get_width() / 2 == approx(i % 2)
             assert bar.get_y() == 0
@@ -1972,7 +2013,7 @@ class TestBarPlot(SharedAggTests):
         y = [1, 2, 3, 4]
         hue = ["x", "x", "y", "y"]
 
-        ax = barplot(x=x, y=y, hue=hue, fill=False)
+        ax = barplot(x=x, y=y, hue=hue, fill=False, legend=False)
         for i, bar in enumerate(ax.patches):
             assert same_color(bar.get_edgecolor(), f"C{i // 2}")
             assert same_color(bar.get_facecolor(), (0, 0, 0, 0))
@@ -2193,6 +2234,26 @@ class TestBarPlot(SharedAggTests):
             assert bar.get_linewidth() == kwargs["linewidth"]
             assert bar.get_facecolor() == kwargs["facecolor"]
             assert bar.get_rasterized() == kwargs["rasterized"]
+
+    def test_legend_attributes(self, long_df):
+
+        palette = color_palette()
+        ax = barplot(
+            long_df, x="a", y="y", hue="c", saturation=1, edgecolor="k", linewidth=3
+        )
+        for i, patch in enumerate(get_legend_handles(ax.get_legend())):
+            assert same_color(patch.get_facecolor(), palette[i])
+            assert same_color(patch.get_edgecolor(), "k")
+            assert patch.get_linewidth() == 3
+
+    def test_legend_unfilled(self, long_df):
+
+        palette = color_palette()
+        ax = barplot(long_df, x="a", y="y", hue="c", fill=False, linewidth=3)
+        for i, patch in enumerate(get_legend_handles(ax.get_legend())):
+            assert patch.get_facecolor() == (0, 0, 0, 0)
+            assert same_color(patch.get_edgecolor(), palette[i])
+            assert patch.get_linewidth() == 3
 
     @pytest.mark.parametrize("fill", [True, False])
     def test_err_kws(self, fill):
@@ -2723,7 +2784,7 @@ class TestCountPlot:
         hue = ["x", "y", "y", "x", "x", "x"]
         counts = [1, 3, 2, 0]
 
-        ax = countplot(x=vals, hue=hue, saturation=1)
+        ax = countplot(x=vals, hue=hue, saturation=1, legend=False)
         for i, bar in enumerate(ax.patches):
             sign = 1 if i // 2 else -1
             assert (
@@ -2863,8 +2924,8 @@ class TestCatPlot(CategoricalFixture):
         assert len(g.ax.lines) == want_elements
 
         g = cat.catplot(x="g", y="y", hue="h", data=self.df, kind="bar")
-        want_elements = self.g.unique().size * self.h.unique().size
-        assert len(g.ax.patches) == want_elements
+        want_elements = self.g.nunique() * self.h.nunique()
+        assert len(g.ax.patches) == (want_elements + self.h.nunique())
         assert len(g.ax.lines) == want_elements
 
         g = cat.catplot(x="g", data=self.df, kind="count")
@@ -2873,7 +2934,7 @@ class TestCatPlot(CategoricalFixture):
         assert len(g.ax.lines) == 0
 
         g = cat.catplot(x="g", hue="h", data=self.df, kind="count")
-        want_elements = self.g.unique().size * self.h.unique().size
+        want_elements = self.g.nunique() * self.h.nunique() + self.h.nunique()
         assert len(g.ax.patches) == want_elements
         assert len(g.ax.lines) == 0
 
@@ -2886,7 +2947,7 @@ class TestCatPlot(CategoricalFixture):
         assert len(self.get_box_artists(g.ax)) == want_artists
 
         g = cat.catplot(x="g", y="y", hue="h", data=self.df, kind="box")
-        want_artists = self.g.unique().size * self.h.unique().size
+        want_artists = self.g.nunique() * self.h.nunique()
         assert len(self.get_box_artists(g.ax)) == want_artists
 
         g = cat.catplot(x="g", y="y", data=self.df,
@@ -2896,8 +2957,8 @@ class TestCatPlot(CategoricalFixture):
 
         g = cat.catplot(x="g", y="y", hue="h", data=self.df,
                         kind="violin", inner=None)
-        want_elements = self.g.unique().size * self.h.unique().size
-        assert len(g.ax.collections) == want_elements + self.h.unique().size
+        want_elements = self.g.nunique() * self.h.nunique()
+        assert len(g.ax.collections) == want_elements
 
         g = cat.catplot(x="g", y="y", data=self.df, kind="strip")
         want_elements = self.g.unique().size
@@ -2906,7 +2967,7 @@ class TestCatPlot(CategoricalFixture):
             assert same_color(strip.get_facecolors(), "C0")
 
         g = cat.catplot(x="g", y="y", hue="h", data=self.df, kind="strip")
-        want_elements = self.g.unique().size + self.h.unique().size
+        want_elements = self.g.nunique()
         assert len(g.ax.collections) == want_elements
 
     def test_bad_plot_kind_error(self):
@@ -2948,13 +3009,15 @@ class TestCatPlot(CategoricalFixture):
         plt.close("all")
 
         ax = cat.pointplot(x="g", y="y", data=self.df, color="purple")
-        g = cat.catplot(x="g", y="y", data=self.df, color="purple")
+        g = cat.catplot(x="g", y="y", data=self.df, color="purple", kind="point")
         for l1, l2 in zip(ax.lines, g.ax.lines):
             assert l1.get_color() == l2.get_color()
         plt.close("all")
 
         ax = cat.pointplot(x="g", y="y", data=self.df, palette="Set2", hue="h")
-        g = cat.catplot(x="g", y="y", data=self.df, palette="Set2", hue="h")
+        g = cat.catplot(
+            x="g", y="y", data=self.df, palette="Set2", hue="h", kind="point"
+        )
         for l1, l2 in zip(ax.lines, g.ax.lines):
             assert l1.get_color() == l2.get_color()
         plt.close("all")

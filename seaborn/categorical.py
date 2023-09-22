@@ -13,17 +13,18 @@ from matplotlib.patches import Rectangle
 import matplotlib.pyplot as plt
 
 from seaborn._core.typing import default, deprecated
-from seaborn._base import infer_orient, categorical_order
+from seaborn._base import VectorPlotter, infer_orient, categorical_order
 from seaborn._stats.density import KDE
-from seaborn.relational import _RelationalPlotter
 from seaborn import utils
 from seaborn.utils import (
     desaturate,
     _check_argument,
     _draw_figure,
     _default_color,
+    _get_patch_legend_artist,
     _get_transform_functions,
     _normalize_kwargs,
+    _scatter_legend_artist,
     _version_predates,
 )
 from seaborn._statistics import EstimateAggregator, LetterValues
@@ -39,14 +40,11 @@ __all__ = [
 ]
 
 
-# Subclassing _RelationalPlotter for the legend machinery,
-# but probably should move that more centrally
-class _CategoricalPlotter(_RelationalPlotter):
+class _CategoricalPlotter(VectorPlotter):
 
     wide_structure = {"x": "@columns", "y": "@values"}
     flat_structure = {"y": "@values"}
 
-    _legend_func = "scatter"
     _legend_attributes = ["color"]
 
     def __init__(
@@ -63,13 +61,13 @@ class _CategoricalPlotter(_RelationalPlotter):
 
         # This method takes care of some bookkeeping that is necessary because the
         # original categorical plots (prior to the 2021 refactor) had some rules that
-        # don't fit exactly into the logic of _core. It may be wise to have a second
+        # don't fit exactly into VectorPlotter logic. It may be wise to have a second
         # round of refactoring that moves the logic deeper, but this will keep things
         # relatively sensible for now.
 
         # For wide data, orient determines assignment to x/y differently from the
-        # wide_structure rules in _core. If we do decide to make orient part of the
-        # _core variable assignment, we'll want to figure out how to express that.
+        # default VectorPlotter rules. If we do decide to make orient part of the
+        # _base variable assignment, we'll want to figure out how to express that.
         if self.input_format == "wide" and orient in ["h", "y"]:
             self.plot_data = self.plot_data.rename(columns={"x": "y", "y": "x"})
             orig_variables = set(self.variables)
@@ -85,7 +83,7 @@ class _CategoricalPlotter(_RelationalPlotter):
                 self.var_types["x"] = orig_y_type
 
         # The concept of an "orientation" is important to the original categorical
-        # plots, but there's no provision for it in _core, so we need to do it here.
+        # plots, but there's no provision for it in VectorPlotter, so we need it here.
         # Note that it could be useful for the other functions in at least two ways
         # (orienting a univariate distribution plot from long-form data and selecting
         # the aggregation axis in lineplot), so we may want to eventually refactor it.
@@ -292,12 +290,28 @@ class _CategoricalPlotter(_RelationalPlotter):
 
         return width_method
 
-    def _get_gray(self, colors):
-        """Get a grayscale value that looks good with color."""
-        if not len(colors):
-            return None
-        colors = [mpl.colors.to_rgb(c) for c in colors]
-        unique_colors = np.unique(colors, axis=0)
+    def _complement_color(self, color, base_color, hue_map):
+        """Allow a color to be set automatically using a basis of comparison."""
+        if color == "gray":
+            msg = (
+                'Use "auto" to set automatic grayscale colors. From v0.14.0, '
+                '"gray" will default to matplotlib\'s definition.'
+            )
+            warnings.warn(msg, FutureWarning, stacklevel=3)
+            color = "auto"
+        elif color is None or color is default:
+            color = "auto"
+
+        if color != "auto":
+            return color
+
+        if hue_map.lookup_table is None:
+            if base_color is None:
+                return None
+            basis = [mpl.colors.to_rgb(base_color)]
+        else:
+            basis = [mpl.colors.to_rgb(c) for c in hue_map.lookup_table.values()]
+        unique_colors = np.unique(basis, axis=0)
         light_vals = [rgb_to_hls(*rgb[:3])[1] for rgb in unique_colors]
         lum = min(light_vals) * .6
         return (lum, lum, lum)
@@ -387,7 +401,7 @@ class _CategoricalPlotter(_RelationalPlotter):
             show_legend = bool(self.legend)
 
         if show_legend:
-            self.add_legend_data(ax, func, common_kws, semantic_kws)
+            self.add_legend_data(ax, func, common_kws, semantic_kws=semantic_kws)
             handles, _ = ax.get_legend_handles_labels()
             if handles:
                 ax.legend(title=self.legend_title)
@@ -431,7 +445,6 @@ class _CategoricalPlotter(_RelationalPlotter):
         jitter,
         dodge,
         color,
-        edgecolor,
         plot_kws,
     ):
 
@@ -470,22 +483,15 @@ class _CategoricalPlotter(_RelationalPlotter):
             self._invert_scale(ax, sub_data)
 
             points = ax.scatter(sub_data["x"], sub_data["y"], color=color, **plot_kws)
-
             if "hue" in self.variables:
                 points.set_facecolors(self._hue_map(sub_data["hue"]))
 
-            if edgecolor == "gray":  # XXX TODO change to "auto"
-                points.set_edgecolors(self._get_gray(points.get_facecolors()))
-            else:
-                points.set_edgecolors(edgecolor)
-
-        self._configure_legend(ax, ax.scatter)
+        self._configure_legend(ax, _scatter_legend_artist, common_kws=plot_kws)
 
     def plot_swarms(
         self,
         dodge,
         color,
-        edgecolor,
         warn_thresh,
         plot_kws,
     ):
@@ -515,14 +521,8 @@ class _CategoricalPlotter(_RelationalPlotter):
 
             self._invert_scale(ax, sub_data)
             points = ax.scatter(sub_data["x"], sub_data["y"], color=color, **plot_kws)
-
             if "hue" in self.variables:
                 points.set_facecolors(self._hue_map(sub_data["hue"]))
-
-            if edgecolor == "gray":  # XXX TODO change to "auto"
-                points.set_edgecolors(self._get_gray(points.get_facecolors()))
-            else:
-                points.set_edgecolors(edgecolor)
 
             if not sub_data.empty:
                 point_collections[(ax, sub_data[self.orient].iloc[0])] = points
@@ -556,7 +556,7 @@ class _CategoricalPlotter(_RelationalPlotter):
                 points.draw = draw.__get__(points)
 
         _draw_figure(ax.figure)
-        self._configure_legend(ax, ax.scatter)
+        self._configure_legend(ax, _scatter_legend_artist, plot_kws)
 
     def plot_boxes(
         self,
@@ -574,12 +574,6 @@ class _CategoricalPlotter(_RelationalPlotter):
 
         iter_vars = ["hue"]
         value_var = {"x": "y", "y": "x"}[self.orient]
-
-        if linecolor is None:
-            if "hue" in self.variables:
-                linecolor = self._get_gray(list(self._hue_map.lookup_table.values()))
-            else:
-                linecolor = self._get_gray([color])
 
         def get_props(element, artist=mpl.lines.Line2D):
             return _normalize_kwargs(plot_kws.pop(f"{element}props", {}), artist)
@@ -716,12 +710,8 @@ class _CategoricalPlotter(_RelationalPlotter):
 
             ax.add_container(BoxPlotContainer(artists))
 
-        patch_kws = props["box"].copy()
-        if not fill:
-            patch_kws["facecolor"] = (1, 1, 1, 0)
-        else:
-            patch_kws["edgecolor"] = linecolor
-        self._configure_legend(ax, ax.fill_between, patch_kws)
+        legend_artist = _get_patch_legend_artist(fill)
+        self._configure_legend(ax, legend_artist, boxprops)
 
     def plot_boxens(
         self,
@@ -760,12 +750,6 @@ class _CategoricalPlotter(_RelationalPlotter):
                 linewidth = 0.5 * mpl.rcParams["lines.linewidth"]
             else:
                 linewidth = mpl.rcParams["lines.linewidth"]
-
-        if linecolor is None:
-            if "hue" in self.variables:
-                linecolor = self._get_gray(list(self._hue_map.lookup_table.values()))
-            else:
-                linecolor = self._get_gray([color])
 
         ax = self.ax
 
@@ -866,12 +850,9 @@ class _CategoricalPlotter(_RelationalPlotter):
 
         ax.autoscale_view(scalex=self.orient == "y", scaley=self.orient == "x")
 
-        patch_kws = box_kws.copy()
-        if not fill:
-            patch_kws["facecolor"] = (1, 1, 1, 0)
-        else:
-            patch_kws["edgecolor"] = linecolor
-        self._configure_legend(ax, ax.fill_between, patch_kws)
+        legend_artist = _get_patch_legend_artist(fill)
+        common_kws = {**box_kws, "linewidth": linewidth, "edgecolor": linecolor}
+        self._configure_legend(ax, legend_artist, common_kws)
 
     def plot_violins(
         self,
@@ -897,12 +878,6 @@ class _CategoricalPlotter(_RelationalPlotter):
         inner_options = ["box", "quart", "stick", "point", None]
         _check_argument("inner", inner_options, inner, prefix=True)
         _check_argument("density_norm", ["area", "count", "width"], density_norm)
-
-        if linecolor is None:
-            if "hue" in self.variables:
-                linecolor = self._get_gray(list(self._hue_map.lookup_table.values()))
-            else:
-                linecolor = self._get_gray([color])
 
         if linewidth is None:
             if fill:
@@ -1151,7 +1126,9 @@ class _CategoricalPlotter(_RelationalPlotter):
                 }
                 ax.plot(invx(x2), invy(y2), **dot_kws)
 
-        self._configure_legend(ax, ax.fill_between)  # TODO, patch_kws)
+        legend_artist = _get_patch_legend_artist(fill)
+        common_kws = {**plot_kws, "linewidth": linewidth, "edgecolor": linecolor}
+        self._configure_legend(ax, legend_artist, common_kws)
 
     def plot_points(
         self,
@@ -1228,8 +1205,9 @@ class _CategoricalPlotter(_RelationalPlotter):
             if aggregator.error_method is not None:
                 self.plot_errorbars(ax, agg_data, capsize, sub_err_kws)
 
+        legend_artist = partial(mpl.lines.Line2D, [], [])
         semantic_kws = {"hue": {"marker": markers, "linestyle": linestyles}}
-        self._configure_legend(ax, ax.plot, sub_kws, semantic_kws)
+        self._configure_legend(ax, legend_artist, sub_kws, semantic_kws)
 
     def plot_bars(
         self,
@@ -1310,7 +1288,8 @@ class _CategoricalPlotter(_RelationalPlotter):
                     {"color": ".26" if fill else main_color, **err_kws}
                 )
 
-        self._configure_legend(ax, ax.fill_between)
+        legend_artist = _get_patch_legend_artist(fill)
+        self._configure_legend(ax, legend_artist, plot_kws)
 
     def plot_errorbars(self, ax, data, capsize, err_kws):
 
@@ -1572,7 +1551,7 @@ _categorical_docs.update(_facet_docs)
 def boxplot(
     data=None, *, x=None, y=None, hue=None, order=None, hue_order=None,
     orient=None, color=None, palette=None, saturation=.75, fill=True,
-    dodge="auto", width=.8, gap=0, whis=1.5, linecolor=None, linewidth=None,
+    dodge="auto", width=.8, gap=0, whis=1.5, linecolor="auto", linewidth=None,
     fliersize=None, hue_norm=None, native_scale=False, log_scale=None, formatter=None,
     legend="auto", ax=None, **kwargs
 ):
@@ -1612,6 +1591,7 @@ def boxplot(
         {k: v for k, v in kwargs.items() if k in ["c", "color", "fc", "facecolor"]},
         saturation=saturation,
     )
+    linecolor = p._complement_color(linecolor, color, p._hue_map)
 
     p.plot_boxes(
         width=width,
@@ -1697,7 +1677,7 @@ def violinplot(
     data=None, *, x=None, y=None, hue=None, order=None, hue_order=None,
     orient=None, color=None, palette=None, saturation=.75, fill=True,
     inner="box", split=False, width=.8, dodge="auto", gap=0,
-    linewidth=None, linecolor=None, cut=2, gridsize=100,
+    linewidth=None, linecolor="auto", cut=2, gridsize=100,
     bw_method="scott", bw_adjust=1, density_norm="area", common_norm=False,
     hue_norm=None, formatter=None, log_scale=None, native_scale=False,
     legend="auto", scale=deprecated, scale_hue=deprecated, bw=deprecated,
@@ -1739,6 +1719,7 @@ def violinplot(
         {k: v for k, v in kwargs.items() if k in ["c", "color", "fc", "facecolor"]},
         saturation=saturation,
     )
+    linecolor = p._complement_color(linecolor, color, p._hue_map)
 
     density_norm, common_norm = p._violin_scale_backcompat(
         scale, scale_hue, density_norm, common_norm,
@@ -1931,6 +1912,7 @@ def boxenplot(
         # {k: v for k, v in kwargs.items() if k in ["c", "color", "fc", "facecolor"]},
         saturation=saturation,
     )
+    linecolor = p._complement_color(linecolor, color, p._hue_map)
 
     p.plot_boxens(
         width=width,
@@ -2054,7 +2036,7 @@ boxenplot.__doc__ = dedent("""\
 def stripplot(
     data=None, *, x=None, y=None, hue=None, order=None, hue_order=None,
     jitter=True, dodge=False, orient=None, color=None, palette=None,
-    size=5, edgecolor="gray", linewidth=0,
+    size=5, edgecolor=default, linewidth=0,
     hue_norm=None, log_scale=None, native_scale=False, formatter=None, legend="auto",
     ax=None, **kwargs
 ):
@@ -2083,11 +2065,10 @@ def stripplot(
     hue_order = p._palette_without_hue_backcompat(palette, hue_order)
     palette, hue_order = p._hue_backcompat(color, palette, hue_order)
 
-    color = _default_color(ax.scatter, hue, color, kwargs)
-
     p.map_hue(palette=palette, order=hue_order, norm=hue_norm)
+    color = _default_color(ax.scatter, hue, color, kwargs)
+    edgecolor = p._complement_color(edgecolor, color, p._hue_map)
 
-    # XXX Copying possibly bad default decisions from original code for now
     kwargs.setdefault("zorder", 3)
     size = kwargs.get("s", size)
 
@@ -2101,7 +2082,6 @@ def stripplot(
         jitter=jitter,
         dodge=dodge,
         color=color,
-        edgecolor=edgecolor,
         plot_kws=kwargs,
     )
 
@@ -2181,7 +2161,7 @@ stripplot.__doc__ = dedent("""\
 def swarmplot(
     data=None, *, x=None, y=None, hue=None, order=None, hue_order=None,
     dodge=False, orient=None, color=None, palette=None,
-    size=5, edgecolor="gray", linewidth=0, hue_norm=None, log_scale=None,
+    size=5, edgecolor=None, linewidth=0, hue_norm=None, log_scale=None,
     native_scale=False, formatter=None, legend="auto", warn_thresh=.05,
     ax=None, **kwargs
 ):
@@ -2213,11 +2193,10 @@ def swarmplot(
     hue_order = p._palette_without_hue_backcompat(palette, hue_order)
     palette, hue_order = p._hue_backcompat(color, palette, hue_order)
 
-    color = _default_color(ax.scatter, hue, color, kwargs)
-
     p.map_hue(palette=palette, order=hue_order, norm=hue_norm)
+    color = _default_color(ax.scatter, hue, color, kwargs)
+    edgecolor = p._complement_color(edgecolor, color, p._hue_map)
 
-    # XXX Copying possibly bad default decisions from original code for now
     kwargs.setdefault("zorder", 3)
     size = kwargs.get("s", size)
 
@@ -2226,13 +2205,13 @@ def swarmplot(
 
     kwargs.update(dict(
         s=size ** 2,
+        edgecolor=edgecolor,
         linewidth=linewidth,
     ))
 
     p.plot_swarms(
         dodge=dodge,
         color=color,
-        edgecolor=edgecolor,
         warn_thresh=warn_thresh,
         plot_kws=kwargs,
     )
@@ -2825,7 +2804,8 @@ def catplot(
         color = "C0" if color is None else color
         if saturation < 1:
             color = desaturate(color, saturation)
-    edgecolor = kwargs.pop("edgecolor", "gray")  # XXX TODO default
+
+    edgecolor = p._complement_color(kwargs.pop("edgecolor", default), color, p._hue_map)
 
     width = kwargs.pop("width", 0.8)
     dodge = kwargs.pop("dodge", False if kind in undodged_kinds else "auto")
@@ -2834,32 +2814,29 @@ def catplot(
 
     if kind == "strip":
 
-        # TODO get these defaults programmatically?
         jitter = kwargs.pop("jitter", True)
-
-        # XXX Copying possibly bad default decisions from original code for now
         plot_kws = kwargs.copy()
+        plot_kws["edgecolor"] = edgecolor
         plot_kws.setdefault("zorder", 3)
-        plot_kws.setdefault("s", plot_kws.pop("size", 5) ** 2)
         plot_kws.setdefault("linewidth", 0)
+        if "s" not in plot_kws:
+            plot_kws["s"] = plot_kws.pop("size", 5) ** 2
 
         p.plot_strips(
             jitter=jitter,
             dodge=dodge,
             color=color,
-            edgecolor=edgecolor,
             plot_kws=plot_kws,
         )
 
     elif kind == "swarm":
 
-        # TODO get these defaults programmatically?
         warn_thresh = kwargs.pop("warn_thresh", .05)
-
-        # XXX Copying possibly bad default decisions from original code for now
         plot_kws = kwargs.copy()
+        plot_kws["edgecolor"] = edgecolor
         plot_kws.setdefault("zorder", 3)
-        plot_kws.setdefault("s", plot_kws.pop("size", 5) ** 2)
+        if "s" not in plot_kws:
+            plot_kws["s"] = plot_kws.pop("size", 5) ** 2
 
         if plot_kws.setdefault("linewidth", 0) is None:
             plot_kws["linewidth"] = np.sqrt(plot_kws["s"]) / 10
@@ -2867,7 +2844,6 @@ def catplot(
         p.plot_swarms(
             dodge=dodge,
             color=color,
-            edgecolor=edgecolor,
             warn_thresh=warn_thresh,
             plot_kws=plot_kws,
         )
@@ -2878,9 +2854,11 @@ def catplot(
         gap = plot_kws.pop("gap", 0)
         fill = plot_kws.pop("fill", True)
         whis = plot_kws.pop("whis", 1.5)
-        linecolor = plot_kws.pop("linecolor", None)
         linewidth = plot_kws.pop("linewidth", None)
         fliersize = plot_kws.pop("fliersize", 5)
+        linecolor = p._complement_color(
+            plot_kws.pop("linecolor", "auto"), color, p._hue_map
+        )
 
         p.plot_boxes(
             width=width,
@@ -2922,8 +2900,9 @@ def catplot(
         )
 
         inner_kws = plot_kws.pop("inner_kws", {}).copy()
-        linecolor = plot_kws.pop("linecolor", None)
         linewidth = plot_kws.pop("linewidth", None)
+        linecolor = plot_kws.pop("linecolor", "auto")
+        linecolor = p._complement_color(linecolor, color, p._hue_map)
 
         p.plot_violins(
             width=width,
@@ -2947,7 +2926,7 @@ def catplot(
         plot_kws = kwargs.copy()
         gap = plot_kws.pop("gap", 0)
         fill = plot_kws.pop("fill", True)
-        linecolor = plot_kws.pop("linecolor", None)
+        linecolor = plot_kws.pop("linecolor", "auto")
         linewidth = plot_kws.pop("linewidth", None)
         k_depth = plot_kws.pop("k_depth", "tukey")
         width_method = plot_kws.pop("width_method", "exponential")
@@ -2961,6 +2940,7 @@ def catplot(
             width_method = p._boxen_scale_backcompat(
                 plot_kws["scale"], width_method
             )
+        linecolor = p._complement_color(linecolor, color, p._hue_map)
 
         p.plot_boxens(
             width=width,
