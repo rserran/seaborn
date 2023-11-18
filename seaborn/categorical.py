@@ -409,12 +409,10 @@ class _CategoricalPlotter(VectorPlotter):
                     data[col] = inv(data[col])
 
     def _configure_legend(self, ax, func, common_kws=None, semantic_kws=None):
-
         if self.legend == "auto":
             show_legend = not self._redundant_hue and self.input_format != "wide"
         else:
             show_legend = bool(self.legend)
-
         if show_legend:
             self.add_legend_data(ax, func, common_kws, semantic_kws=semantic_kws)
             handles, _ = ax.get_legend_handles_labels()
@@ -2830,7 +2828,11 @@ def catplot(
         if saturation < 1:
             color = desaturate(color, saturation)
 
-    edgecolor = p._complement_color(kwargs.pop("edgecolor", default), color, p._hue_map)
+    if kind in ["strip", "swarm"]:
+        kwargs = _normalize_kwargs(kwargs, mpl.collections.PathCollection)
+        kwargs["edgecolor"] = p._complement_color(
+            kwargs.pop("edgecolor", default), color, p._hue_map
+        )
 
     width = kwargs.pop("width", 0.8)
     dodge = kwargs.pop("dodge", False if kind in undodged_kinds else "auto")
@@ -2841,7 +2843,6 @@ def catplot(
 
         jitter = kwargs.pop("jitter", True)
         plot_kws = kwargs.copy()
-        plot_kws["edgecolor"] = edgecolor
         plot_kws.setdefault("zorder", 3)
         plot_kws.setdefault("linewidth", 0)
         if "s" not in plot_kws:
@@ -2858,7 +2859,6 @@ def catplot(
 
         warn_thresh = kwargs.pop("warn_thresh", .05)
         plot_kws = kwargs.copy()
-        plot_kws["edgecolor"] = edgecolor
         plot_kws.setdefault("zorder", 3)
         if "s" not in plot_kws:
             plot_kws["s"] = plot_kws.pop("size", 5) ** 2
@@ -3095,7 +3095,11 @@ def catplot(
         g._update_legend_data(ax)
         ax.legend_ = None
 
-    if legend and "hue" in p.variables and p.input_format == "long":
+    if legend == "auto":
+        show_legend = not p._redundant_hue and p.input_format != "wide"
+    else:
+        show_legend = bool(legend)
+    if show_legend:
         g.add_legend(title=p.variables.get("hue"), label_order=hue_order)
 
     if data is not None:

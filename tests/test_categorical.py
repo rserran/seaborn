@@ -2307,7 +2307,7 @@ class TestBarPlot(SharedAggTests):
             dict(data="long", x="a", y="y", errorbar=("pi", 50)),
             dict(data="long", x="a", y="y", errorbar=None),
             dict(data="long", x="a", y="y", capsize=.3, err_kws=dict(c="k")),
-            dict(data="long", x="a", y="y", color="blue", ec="green", alpha=.5),
+            dict(data="long", x="a", y="y", color="blue", edgecolor="green", alpha=.5),
         ]
     )
     def test_vs_catplot(self, long_df, wide_df, null_df, flat_series, kwargs):
@@ -3124,6 +3124,14 @@ class TestCatPlot(CategoricalFixture):
 
         with pytest.raises(ValueError, match="Invalid `kind`: 'wrong'"):
             catplot(long_df, kind="wrong")
+
+    def test_legend_with_auto(self):
+
+        g1 = catplot(self.df, x="g", y="y", hue="g", legend='auto')
+        assert g1._legend is None
+
+        g2 = catplot(self.df, x="g", y="y", hue="g", legend=True)
+        assert g2._legend is not None
 
 
 class TestBeeswarm:
