@@ -858,7 +858,7 @@ class Plot:
 
     # TODO def legend (ugh)
 
-    def theme(self, *args: dict[str, Any]) -> Plot:
+    def theme(self, config: dict[str, Any], /) -> Plot:
         """
         Control the appearance of elements in the plot.
 
@@ -880,13 +880,7 @@ class Plot:
         """
         new = self._clone()
 
-        # We can skip this whole block on Python 3.8+ with positional-only syntax
-        nargs = len(args)
-        if nargs != 1:
-            err = f"theme() takes 1 positional argument, but {nargs} were given"
-            raise TypeError(err)
-
-        rc = mpl.RcParams(args[0])
+        rc = mpl.RcParams(config)
         new._theme.update(rc)
 
         return new
@@ -1177,6 +1171,8 @@ class Plotter:
                     )
                 )
                 for group in ("major", "minor"):
+                    side = {"x": "bottom", "y": "left"}[axis]
+                    axis_obj.set_tick_params(**{f"label{side}": show_tick_labels})
                     for t in getattr(axis_obj, f"get_{group}ticklabels")():
                         t.set_visible(show_tick_labels)
 
