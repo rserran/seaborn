@@ -19,37 +19,58 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "numpy>=1.20,!=1.24.0",
-    "pandas>=1.2",
-    "matplotlib>=3.4,!=3.6.1",
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "matplotlib>=3.9",
 ]
 
 [project.optional-dependencies]
 stats = [
-    "scipy>=1.7",
-    "statsmodels>=0.12",
+    "scipy>=1.14",
+    "statsmodels>=0.14.3",
 ]
-dev = [
-    "pytest",
-    "pytest-cov",
-    "pytest-xdist",
-    "flake8",
-    "mypy",
-    "pandas-stubs",
-    "pre-commit",
-    "flit",
+
+[dependency-groups]
+test = [
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "pytest-xdist==3.8.0",
+]
+lint = [
+    "ruff==0.15.20",
+]
+# Type checking requires Python >=3.12 to pull in scientific Python stubs
+typecheck = [
+    "ty==0.0.56",
+    "pandas-stubs==3.0.3.260530 ; python_version >= '3.12'",
+    "scipy-stubs==1.18.0.0 ; python_version >= '3.12'",
 ]
 docs = [
-    "numpydoc",
-    "nbconvert",
-    "ipykernel",
-    "sphinx<6.0.0",
-    "sphinx-copybutton",
-    "sphinx-issues",
-    "sphinx-design",
-    "pyyaml",
-    "pydata_sphinx_theme==0.10.0rc2",
+    "numpydoc==1.6.0",
+    "nbconvert==7.17.1",
+    "ipykernel==7.3.0",
+    "sphinx==9.1.0",
+    "sphinx-copybutton==0.5.2",
+    "sphinx-issues==5.0.1",
+    "sphinx-design==0.7.0",
+    "pyyaml==6.0.3",
+    "pydata_sphinx_theme==0.19.0",
 ]
+dev = [
+    {include-group = "test"},
+    {include-group = "lint"},
+    {include-group = "typecheck"},
+    "seaborn[stats]",
+    "pre-commit==4.6.0",
+    "flit==3.12.0",
+    "jupyterlab==4.6.1",
+]
+
+[tool.uv]
+default-groups = "all"
+
+[tool.uv.dependency-groups]
+docs = { requires-python = ">=3.12" }
 
 [project.urls]
 Source = "https://github.com/mwaskom/seaborn"
@@ -64,3 +85,51 @@ filterwarnings = [
    "ignore:\\s*Pyarrow will become a required dependency of pandas:DeprecationWarning",
    "ignore:datetime.datetime.utcfromtimestamp\\(\\) is deprecated:DeprecationWarning",
  ]
+
+[tool.ruff]
+line-length = 88
+extend-exclude = ["seaborn/cm.py", "seaborn/external"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F"]
+ignore = ["E741", "F522"]
+
+[tool.ty.environment]
+python = "./.venv"
+python-version = "3.13"
+
+[tool.ty.src]
+include = ["seaborn/_core", "seaborn/_marks", "seaborn/_stats"]
+
+[tool.ty.rules]
+# A number of ty checks are ignored because the code was originally written using mypy
+# with much weaker upstream typing (i.e. in numpy / pandas / matplotlib)
+# Gradually address these and remove the rule ignores over time.
+possibly-missing-submodule = "ignore"  # `import matplotlib as mpl` -> `mpl.text.Text` idiom
+invalid-method-override = "ignore"      # intentional Mark._plot / Scale._get_* signatures
+invalid-argument-type = "ignore"        # matplotlib/pandas/numpy arg types stricter than usage
+unresolved-attribute = "ignore"         # attributes on `Axis | None` and numpy unions
+not-subscriptable = "ignore"            # subscripting numpy `ArrayLike` unions
+not-iterable = "ignore"                 # iterating numpy `ArrayLike` unions
+unsupported-operator = "ignore"         # arithmetic on pandas/numpy/scipy unions
+invalid-assignment = "ignore"           # assigning to matplotlib-typed slots
+no-matching-overload = "ignore"         # matplotlib overloaded APIs
+call-non-callable = "ignore"            # object-typed matplotlib slots
+call-top-callable = "ignore"            # numpy callables with unknown signatures
+invalid-return-type = "ignore"          # return values widened by stub unions
+
+[tool.coverage.run]
+omit = [
+    "seaborn/widgets.py",
+    "seaborn/external/*",
+    "seaborn/colors/*",
+    "seaborn/cm.py",
+    "seaborn/conftest.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

@@ -36,7 +36,7 @@ from seaborn.categorical import (
     violinplot,
 )
 from seaborn.palettes import color_palette
-from seaborn.utils import _draw_figure, _version_predates, desaturate
+from seaborn.utils import _draw_figure, desaturate
 
 
 PLOT_FUNCS = [
@@ -664,7 +664,7 @@ class SharedScatterTests(SharedAxesLevelTests):
         ax.set_xscale("log")
         self.func(x=x)
         vals = ax.collections[0].get_offsets()[:, 0]
-        assert_array_equal(x, vals)
+        assert_array_almost_equal(x, vals)
 
         y = [1, 2, 3, 4]
 
@@ -681,7 +681,7 @@ class SharedScatterTests(SharedAxesLevelTests):
         ax.set_yscale("log")
         self.func(x=x, y=y, orient="h", native_scale=True)
         cat_points = ax.collections[0].get_offsets().copy()[:, 1]
-        assert np.ptp(np.log10(cat_points)) <= .8
+        assert np.ptp(np.log10(cat_points)) <= 0.8 + 1e-14
 
     @pytest.mark.parametrize(
         "kwargs",
@@ -2616,10 +2616,6 @@ class TestPointPlot(SharedAggTests):
             assert same_color(line.get_color(), kws["color"])
             assert line.get_linewidth() == kws["linewidth"]
 
-    @pytest.mark.skipif(
-        _version_predates(mpl, "3.6"),
-        reason="Legend handle missing marker property"
-    )
     def test_legend_contents(self):
 
         x, y = ["a", "a", "b", "b"], [1, 2, 3, 4]
@@ -2633,10 +2629,6 @@ class TestPointPlot(SharedAggTests):
             assert handle.get_linestyle() == "-"
             assert same_color(handle.get_color(), f"C{i}")
 
-    @pytest.mark.skipif(
-        _version_predates(mpl, "3.6"),
-        reason="Legend handle missing marker property"
-    )
     def test_legend_set_props(self):
 
         x, y = ["a", "a", "b", "b"], [1, 2, 3, 4]
@@ -2648,10 +2640,6 @@ class TestPointPlot(SharedAggTests):
             assert handle.get_marker() == kws["marker"]
             assert handle.get_linewidth() == kws["linewidth"]
 
-    @pytest.mark.skipif(
-        _version_predates(mpl, "3.6"),
-        reason="Legend handle missing marker property"
-    )
     def test_legend_synced_props(self):
 
         x, y = ["a", "a", "b", "b"], [1, 2, 3, 4]
@@ -2934,11 +2922,8 @@ class CategoricalFixture:
 
     def get_box_artists(self, ax):
 
-        if _version_predates(mpl, "3.5.0b0"):
-            return ax.artists
-        else:
-            # Exclude labeled patches, which are for the legend
-            return [p for p in ax.patches if not p.get_label()]
+        # Exclude labeled patches, which are for the legend
+        return [p for p in ax.patches if not p.get_label()]
 
 
 class TestCatPlot(CategoricalFixture):

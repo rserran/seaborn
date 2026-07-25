@@ -1,5 +1,7 @@
 *.pyc
 *.sw*
+uv.lock
+.venv/
 build/
 .ipynb_checkpoints/
 dist/
@@ -14,3 +16,4 @@ htmlcov/
 .DS_Store
 notes/
 notebooks/
+.python-version

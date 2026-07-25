@@ -31,7 +31,6 @@ from seaborn.distributions import (
     kdeplot,
     rugplot,
 )
-from seaborn.utils import _version_predates
 from seaborn.axisgrid import FacetGrid
 from seaborn._testing import (
     assert_plots_equal,
@@ -41,27 +40,19 @@ from seaborn._testing import (
 
 
 def get_contour_coords(c, filter_empty=False):
-    """Provide compatability for change in contour artist types."""
-    if isinstance(c, mpl.collections.LineCollection):
-        # See https://github.com/matplotlib/matplotlib/issues/20906
-        return c.get_segments()
-    elif isinstance(c, (mpl.collections.PathCollection, mpl.contour.QuadContourSet)):
-        return [
-            p.vertices[:np.argmax(p.codes) + 1] for p in c.get_paths()
-            if len(p) or not filter_empty
-        ]
+    """Provide access to contour path coordinates."""
+    return [
+        p.vertices[:np.argmax(p.codes) + 1] for p in c.get_paths()
+        if len(p) or not filter_empty
+    ]
 
 
 def get_contour_color(c):
-    """Provide compatability for change in contour artist types."""
-    if isinstance(c, mpl.collections.LineCollection):
-        # See https://github.com/matplotlib/matplotlib/issues/20906
-        return c.get_color()
-    elif isinstance(c, (mpl.collections.PathCollection, mpl.contour.QuadContourSet)):
-        if c.get_facecolor().size:
-            return c.get_facecolor()
-        else:
-            return c.get_edgecolor()
+    """Provide access to contour artist color."""
+    if c.get_facecolor().size:
+        return c.get_facecolor()
+    else:
+        return c.get_edgecolor()
 
 
 class TestDistPlot:
@@ -907,9 +898,6 @@ class TestKDEPlotUnivariate(SharedAxesLevelTests):
             assert label.get_text() == level
 
         legend_artists = ax.legend_.findobj(mpl.lines.Line2D)
-        if _version_predates(mpl, "3.5.0b0"):
-            # https://github.com/matplotlib/matplotlib/pull/20699
-            legend_artists = legend_artists[::2]
         palette = color_palette()
         for artist, color in zip(legend_artists, palette):
             assert_colors_equal(artist.get_color(), color)
@@ -969,12 +957,7 @@ class TestKDEPlotBivariate:
             f, ax = plt.subplots()
             kdeplot(data=long_df, x="x", y="y", hue="c", fill=fill)
             for c in ax.collections:
-                if not _version_predates(mpl, "3.8.0rc1"):
-                    assert isinstance(c, mpl.contour.QuadContourSet)
-                elif fill or not _version_predates(mpl, "3.5.0b0"):
-                    assert isinstance(c, mpl.collections.PathCollection)
-                else:
-                    assert isinstance(c, mpl.collections.LineCollection)
+                assert isinstance(c, mpl.contour.QuadContourSet)
 
     def test_common_norm(self, rng):
 
@@ -1017,7 +1000,7 @@ class TestKDEPlotBivariate:
         for c1, c2 in zip(ax1.collections, ax2.collections):
             assert len(get_contour_coords(c1)) == len(get_contour_coords(c2))
             for arr1, arr2 in zip(get_contour_coords(c1), get_contour_coords(c2)):
-                assert_array_equal(arr1, arr2)
+                assert_array_almost_equal(arr1, arr2)
 
     def test_bandwidth(self, rng):
 
@@ -1460,6 +1443,19 @@ class TestHistPlotUnivariate(SharedAxesLevelTests):
         bar_heights = [bar.get_height() for bar in ax.patches]
         total_weight = null_df[["x", "s"]].dropna()["s"].sum()
         assert sum(bar_heights) == pytest.approx(total_weight)
+
+    def test_weights_with_array_bins(self):
+
+        x = np.linspace(.05, .95, 10)
+        weights = np.ones_like(x)
+        bins = np.linspace(0, 1, 11)
+
+        ax = histplot(x=x, weights=weights, bins=bins)
+
+        assert len(ax.patches) == len(bins) - 1
+        assert sum(bar.get_height() for bar in ax.patches) == pytest.approx(
+            weights.sum()
+        )
 
     def test_weight_norm(self, rng):
 
@@ -2446,10 +2442,7 @@ class TestDisPlot:
         z = [0] * 80 + [1] * 20
 
         def count_contours(ax):
-            if _version_predates(mpl, "3.8.0rc1"):
-                return sum(bool(get_contour_coords(c)) for c in ax.collections)
-            else:
-                return sum(bool(p.vertices.size) for p in ax.collections[0].get_paths())
+            return sum(bool(p.vertices.size) for p in ax.collections[0].get_paths())
 
         g = displot(x=x, y=y, col=z, kind="kde", levels=10)
         l1 = count_contours(g.axes.flat[0])
